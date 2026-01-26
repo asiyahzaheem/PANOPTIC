@@ -1,0 +1,27 @@
+data:
+  #base_dir: "/Users/asiyah/Library/CloudStorage/GoogleDrive-asiyah.20233158@iit.ac.lk/My Drive/PDAC_DATA"
+  base_dir: "/Volumes/ugly/PDAC_DATA"
+  labels_csv: "/Users/asiyah/Documents/PANOPCTIC_v1/pdac/artifacts/labels.csv"
+  tcia_raw_dir: "/Volumes/ugly/PDAC_DATA/tcia_raw"
+  tcia_nifti_dir: "/Volumes/ugly/PDAC_DATA/tcia_nifti"
+  nih_data_dir: "/Volumes/ugly/PDAC_DATA/nih/data"
+  models_dir: "models"
+
+preprocess:
+  hu_min: -150
+  hu_max: 250
+  k_slices: 8
+  slice_pool: 16     
+  patch_resize: 256
+  patch_crop: 224
+  crop_frac: 0.6
+
+train:
+  seed: 42
+  epochs: 5
+  batch_size: 2
+  lr: 0.0001
+  num_workers: 0
+  val_split: 0.2
+  val_frac: 0.2
+
