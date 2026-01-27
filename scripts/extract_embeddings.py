@@ -1,62 +1,106 @@
-import argparse
+from __future__ import annotations
 from pathlib import Path
-import numpy as np
+import sys
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
+import torchvision.transforms as T
+from tqdm import tqdm
+from pandas.errors import EmptyDataError
 
-from src.utils.io import load_config
-from src.data.dataset import ScanDatasetKSlice
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.utils.io import load_config, ensure_dir
+from src.data.dataset import ScanKSliceDataset
 from src.models.cnn_backbone import ResNet18Embedder
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--config", required=True, help="Path to config.yaml")
-    ap.add_argument("--ckpt", required=True, help="Path to saved ckpt (.pt) containing embedder weights")
-    ap.add_argument("--out_dir", default="artifacts/embeddings", help="Output dir")
-    args = ap.parse_args()
 
-    cfg = load_config(args.config)
-    labels_csv = Path(cfg["paths"]["labels_csv"])
-    df = pd.read_csv(labels_csv)
+def repeat_to_3ch(x: torch.Tensor) -> torch.Tensor:
+    return x.repeat(3, 1, 1)
+
+def make_transform(resize: int, crop: int):
+    return T.Compose([
+        T.ToPILImage(),
+        T.Resize(resize),
+        T.CenterCrop(crop),
+        T.ToTensor(),
+        repeat_to_3ch,
+    ])
+
+@torch.no_grad()
+def main():
+    cfg = load_config("configs/config.yaml")
+    artifacts = ensure_dir(Path(cfg["data"]["artifacts_dir"]))
+
+    index_csv = artifacts / cfg["data"]["imaging_index_csv"]
+    #qc_log = artifacts / cfg["data"]["imaging_qc_log_csv"]
+    out_csv = artifacts / cfg["data"]["imaging_embeddings_csv"]
+    out_pt = artifacts / cfg["data"]["imaging_embeddings_pt"]
+
+    df = pd.read_csv(index_csv)
+
+    qc_log = artifacts / cfg["data"]["imaging_qc_log_csv"]
+    bad_set = set()
+    if qc_log.exists() and qc_log.stat().st_size > 0:
+        try:
+            bad_df = pd.read_csv(qc_log)
+            if "filepath" in bad_df.columns:
+                bad_set = set(bad_df["filepath"].astype(str).tolist())
+        except EmptyDataError:
+            bad_set = set()
+    else:
+            print("[EMB] No QC log found/usable; using all scans")
+
+    if bad_set:
+        before = len(df)
+        df = df[~df["filepath"].astype(str).isin(bad_set)].reset_index(drop=True)
+        print(f"[EMB] Skipping QC-logged scans: {before} -> {len(df)}")
+
+    tfm = make_transform(cfg["preprocess"]["patch_resize"], cfg["preprocess"]["patch_crop"])
+    ds = ScanKSliceDataset(df, cfg, transform=tfm)
+
+    loader = DataLoader(
+        ds,
+        batch_size=int(cfg["embeddings"]["batch_size"]),
+        shuffle=False,
+        num_workers=int(cfg["embeddings"]["num_workers"]),
+    )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    embedder = ResNet18Embedder().to(device).eval()
 
-    # Load embedder
-    embedder = ResNet18Embedder().to(device)
-    ckpt = torch.load(args.ckpt, map_location=device)
-    embedder.load_state_dict(ckpt["embedder"])
-    embedder.eval()
+    # store in dict for easy GNN usage later
+    emb_dict = {}
 
-    # Dataset (no augmentation for deterministic embeddings)
-    ds = ScanDatasetKSlice(df=df, cfg=cfg, transform=None)
-    dl = DataLoader(ds, batch_size=cfg["train"].get("batch_size", 2), shuffle=False, num_workers=0)
+    rows = []
+    for xk, pid, source in tqdm(loader, desc="Embeddings"):
+        # xk: [B,K,3,224,224]
+        B, K, C, H, W = xk.shape
+        xk = xk.to(device)
 
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+        xflat = xk.view(B * K, C, H, W)
+        zflat = embedder(xflat)                 # [B*K,512]
+        zscan = zflat.view(B, K, -1).mean(1)    # [B,512]
+        zscan_cpu = zscan.cpu()
 
-    all_embs = []
-    with torch.no_grad():
-        for xk, _y in dl:
-            xk = xk.to(device)               # [B,K,3,H,W]
-            B, K, C, H, W = xk.shape
-            xflat = xk.view(B*K, C, H, W)     # [B*K,3,H,W]
+        for i in range(B):
+            p = pid[i]
+            s = source[i]
+            vec = zscan_cpu[i]
+            emb_dict[p] = vec
 
-            zflat = embedder(xflat)           # [B*K,512]
-            zscan = zflat.view(B, K, -1).mean(1)  # [B,512]
+            row = {"patient_id": p, "source": s}
+            row.update({f"z{j}": float(vec[j].item()) for j in range(vec.shape[0])})
+            rows.append(row)
 
-            all_embs.append(zscan.cpu().numpy())
+    out_df = pd.DataFrame(rows)
+    out_df.to_csv(out_csv, index=False)
+    torch.save(emb_dict, out_pt)
 
-    embs = np.concatenate(all_embs, axis=0)   # [N,512]
-    np.save(out_dir / "imaging_embeddings.npy", embs)
-
-    index_df = df.copy()
-    index_df["emb_index"] = np.arange(len(index_df))
-    index_df.to_csv(out_dir / "imaging_embedding_index.csv", index=False)
-
-    print("[OK] embeddings saved:", (out_dir / "imaging_embeddings.npy"))
-    print("[OK] index saved:", (out_dir / "imaging_embedding_index.csv"))
-    print("[OK] shape:", embs.shape)
+    print(f"[OK] wrote: {out_csv}")
+    print(f"[OK] wrote: {out_pt}  (dict patient_id -> tensor[512])")
 
 if __name__ == "__main__":
     main()

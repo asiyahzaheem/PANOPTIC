@@ -24,18 +24,28 @@ from src.models.cnn_backbone import ResNet18Embedder, LinearHead
 # ----------------------------
 # Transforms
 # ----------------------------
-def repeat_to_3ch(x):
+def repeat_to_3ch(x: torch.Tensor) -> torch.Tensor:
+    # x: [1,H,W] -> [3,H,W]
     return x.repeat(3, 1, 1)
 
-def make_transform(resize: int, crop: int):
-    return T.Compose([
-        T.ToPILImage(),
-        T.Resize(resize),
-        T.RandomResizedCrop(crop, scale=(0.8, 1.0)),
-        T.RandomApply([T.ColorJitter(brightness=0.3, contrast=0.3)], p=0.8),
-        T.ToTensor(),
-        repeat_to_3ch,
-    ])
+def make_transform(resize: int, crop: int, train: bool) -> T.Compose:
+    if train:
+        return T.Compose([
+            T.ToPILImage(),
+            T.Resize(resize),
+            T.RandomResizedCrop(crop, scale=(0.8, 1.0)),
+            T.RandomHorizontalFlip(p=0.5),
+            T.ToTensor(),
+            repeat_to_3ch,
+        ])
+    else:
+        return T.Compose([
+            T.ToPILImage(),
+            T.Resize(resize),
+            T.CenterCrop(crop),
+            T.ToTensor(),
+            repeat_to_3ch,
+        ])
 
 
 # ----------------------------
@@ -47,7 +57,10 @@ def run_epoch(embedder, head, loader, optimizer, criterion, device, train=True):
 
     total_loss, correct, total = 0.0, 0, 0
 
-    for xk, y, _ in tqdm(loader, desc=("train" if train else "val"), leave=False):
+    for batch in tqdm(loader, desc=("train" if train else "val"), leave=False):
+        # dataset is expected to return (xk, y, source)
+        xk, y, _source = batch
+
         B, K, C, H, W = xk.shape
         xk = xk.to(device)
         y = y.to(device).float()
@@ -73,13 +86,13 @@ def run_epoch(embedder, head, loader, optimizer, criterion, device, train=True):
 
 
 # ----------------------------
-# Eval by Source (NIH / TCIA)
+# Eval by Source (generic)
 # ----------------------------
 def eval_by_source(embedder, head, loader, device):
     embedder.eval()
     head.eval()
 
-    stats = {}
+    correct = {}
     counts = {}
 
     with torch.no_grad():
@@ -92,15 +105,15 @@ def eval_by_source(embedder, head, loader, device):
             zflat = embedder(xflat)
             logits_flat = head(zflat)
 
-            logits_scan = logits_flat.view(B, K, 1).mean(dim=1).squeeze(1)
+            logits_scan = logits_flat.view(B, K, 1).mean(dim=1).squeeze(1)  # [B]
             preds = (torch.sigmoid(logits_scan) >= 0.5).float()
 
             for i in range(B):
-                src = source[i]
-                stats[src] = stats.get(src, 0) + float(preds[i] == y[i])
+                src = str(source[i])
+                correct[src] = correct.get(src, 0.0) + float(preds[i].item() == y[i].item())
                 counts[src] = counts.get(src, 0) + 1
 
-    return {k: stats[k] / counts[k] for k in stats}
+    return {src: correct[src] / counts[src] for src in correct}
 
 
 # ----------------------------
@@ -111,48 +124,83 @@ def main():
     set_seed(cfg["train"]["seed"])
 
     base = Path(cfg["data"]["base_dir"])
+
     labels_csv = resolve_path(base, cfg["data"]["labels_csv"])
     models_dir = resolve_path(base, cfg["data"]["models_dir"])
+    runs_dir   = resolve_path(base, cfg["data"]["runs_dir"])
+    qc_log     = resolve_path(base, cfg["data"]["qc_log_csv"])
+
     models_dir.mkdir(parents=True, exist_ok=True)
+    runs_dir.mkdir(parents=True, exist_ok=True)
 
     df = pd.read_csv(labels_csv)
 
-    # ---- QC filtering (safe)
-    qc_log = Path("artifacts/data_qc_log.csv")
-    bad_set = set()
+    # ---- Basic sanity filters (prevents dumb crashes)
+    df["filepath"] = df["filepath"].astype(str)
+    df = df[df["filepath"].apply(lambda p: Path(p).exists())].reset_index(drop=True)
 
+    # ---- QC filtering (skip-only, safe)
+    bad_set = set()
     if qc_log.exists() and qc_log.stat().st_size > 0:
         try:
             bad_df = pd.read_csv(qc_log)
             if "filepath" in bad_df.columns:
-                bad_set = set(bad_df["filepath"].astype(str))
+                bad_set = set(bad_df["filepath"].astype(str).tolist())
         except EmptyDataError:
-            pass
+            bad_set = set()
 
     if bad_set:
         before = len(df)
-        df = df[~df["filepath"].astype(str).isin(bad_set)].reset_index(drop=True)
+        df = df[~df["filepath"].isin(bad_set)].reset_index(drop=True)
         print(f"[TRAIN] Skipping QC scans: {before} -> {len(df)}")
     else:
         print("[TRAIN] No QC log found/usable; using all scans")
 
-    # ---- Stratified split (label + source)
+    # ---- Stratified split (label + source) with safe fallback
+    if "source" not in df.columns:
+        df["source"] = "UNKNOWN"
+
     df["strat_key"] = df["source"].astype(str) + "_" + df["label"].astype(str)
+    key_counts = df["strat_key"].value_counts()
+
+    stratify_col = df["strat_key"]
+    if (key_counts < 2).any():
+        # too small to stratify safely
+        stratify_col = None
+        print("[WARN] Stratify disabled (some groups < 2 samples).")
+
     train_df, val_df = train_test_split(
         df,
         test_size=cfg["train"]["val_frac"],
         random_state=cfg["train"]["seed"],
-        stratify=df["strat_key"],
+        shuffle=True,
+        stratify=stratify_col,
     )
 
     print("TRAIN source counts:\n", train_df["source"].value_counts())
     print("VAL source counts:\n", val_df["source"].value_counts())
+    print("TRAIN label counts:\n", train_df["label"].value_counts())
+    print("VAL label counts:\n", val_df["label"].value_counts())
 
-    train_ds = ScanDatasetKSlice(train_df, cfg, transform=None)
-    val_ds   = ScanDatasetKSlice(val_df, cfg, transform=None)
+    # ---- Transforms actually used
+    train_tf = make_transform(cfg["preprocess"]["patch_resize"], cfg["preprocess"]["patch_crop"], train=True)
+    val_tf   = make_transform(cfg["preprocess"]["patch_resize"], cfg["preprocess"]["patch_crop"], train=False)
 
-    train_loader = DataLoader(train_ds, batch_size=cfg["train"]["batch_size"], shuffle=True)
-    val_loader   = DataLoader(val_ds, batch_size=cfg["train"]["batch_size"], shuffle=False)
+    train_ds = ScanDatasetKSlice(train_df, cfg, transform=train_tf)
+    val_ds   = ScanDatasetKSlice(val_df,   cfg, transform=val_tf)
+
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=cfg["train"]["batch_size"],
+        shuffle=True,
+        num_workers=cfg["train"]["num_workers"],
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=cfg["train"]["batch_size"],
+        shuffle=False,
+        num_workers=cfg["train"]["num_workers"],
+    )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -166,7 +214,9 @@ def main():
     )
     criterion = nn.BCEWithLogitsLoss()
 
-    writer = SummaryWriter("runs/pdac_cnn")
+    writer = SummaryWriter(str(runs_dir))
+    print("[TB] TensorBoard logging to:", runs_dir)
+
     best_val = 0.0
     best_path = models_dir / "cnn_pdac_mvp_best.pt"
 
@@ -178,15 +228,16 @@ def main():
         writer.add_scalar("acc/train", tr_acc, epoch)
         writer.add_scalar("loss/val", va_loss, epoch)
         writer.add_scalar("acc/val", va_acc, epoch)
+        writer.flush()
 
-        domain_acc = eval_by_source(embedder, head, val_loader, device)
+        by_src = eval_by_source(embedder, head, val_loader, device)
+        by_src_str = " | ".join([f"{k} acc {v:.4f}" for k, v in sorted(by_src.items())])
 
         print(
             f"Epoch {epoch} | "
             f"train loss {tr_loss:.4f} acc {tr_acc:.4f} | "
-            f"val loss {va_loss:.4f} acc {va_acc:.4f} | "
-            f"TCIA acc {domain_acc.get('TCIA', 'NA')} | "
-            f"NIH acc {domain_acc.get('NIH', 'NA')}"
+            f"val loss {va_loss:.4f} acc {va_acc:.4f}"
+            + (f" | {by_src_str}" if by_src_str else "")
         )
 
         if va_acc > best_val:

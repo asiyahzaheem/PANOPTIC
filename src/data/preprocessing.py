@@ -1,48 +1,32 @@
 from __future__ import annotations
-from pathlib import Path
 import numpy as np
-import nibabel as nib
 
-def load_volume_slices_first(path: str | Path) -> np.ndarray:
-    img = nib.load(str(path))
-    vol = img.get_fdata().astype(np.float32)
+def clip_and_normalize_hu(vol: np.ndarray, hu_min: float, hu_max: float) -> np.ndarray:
+    vol = np.clip(vol, hu_min, hu_max)
+    vol = (vol - hu_min) / (hu_max - hu_min + 1e-6)
+    return vol.astype(np.float32)
+
+def to_slices_first(vol: np.ndarray) -> np.ndarray:
+    # Expect 3D, assume last axis is slices, move to [Z,H,W]
     if vol.ndim != 3:
-        raise ValueError(f"Expected 3D, got {vol.shape} for {path}")
-    # Convert (H,W,S) -> (S,H,W)
-    vol = np.transpose(vol, (2, 0, 1))
-    return vol
+        raise ValueError(f"Expected 3D volume, got {vol.shape}")
+    return np.moveaxis(vol, -1, 0)
 
-def window_hu(vol: np.ndarray, hu_min: float, hu_max: float) -> np.ndarray:
-    return np.clip(vol, hu_min, hu_max)
+def pick_k_slices_center(vol_z_hw: np.ndarray, k: int, pool: int) -> np.ndarray:
+    z = vol_z_hw.shape[0]
+    if z <= 0:
+        raise ValueError("Empty volume")
 
-def normalize_scan_z(vol: np.ndarray) -> np.ndarray:
-    m = float(np.mean(vol))
-    s = float(np.std(vol)) + 1e-6
-    return (vol - m) / s
+    pool = min(pool, z)
+    start = max(0, (z - pool) // 2)
+    end = start + pool
+    cand = np.arange(start, end)
 
-def pick_central_slice_pool(vol: np.ndarray, pool_size: int) -> np.ndarray:
-    S = vol.shape[0]
-    if S <= pool_size:
-        return vol
-    start = (S - pool_size) // 2
-    return vol[start:start + pool_size]
+    if len(cand) < k:
+        idx = np.resize(cand, k)
+    else:
+        # evenly spread inside pool
+        idx = np.linspace(0, len(cand) - 1, k).round().astype(int)
+        idx = cand[idx]
 
-def to_uint8_01(slice_2d: np.ndarray) -> np.ndarray:
-    mn, mx = float(slice_2d.min()), float(slice_2d.max())
-    x = (slice_2d - mn) / (mx - mn + 1e-6)
-    x = (x * 255.0).astype(np.uint8)
-    return x
-
-def center_crop_3d(vol: np.ndarray, frac: float = 0.6) -> np.ndarray:
-    """
-    vol: (S, H, W)
-    frac: keep this fraction of H and W (e.g., 0.6 keeps central 60%)
-    """
-    assert vol.ndim == 3
-    S, H, W = vol.shape
-    new_h = max(1, int(H * frac))
-    new_w = max(1, int(W * frac))
-
-    y0 = (H - new_h) // 2
-    x0 = (W - new_w) // 2
-    return vol[:, y0:y0 + new_h, x0:x0 + new_w]
+    return vol_z_hw[idx]  # [K,H,W]
