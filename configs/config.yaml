@@ -19,6 +19,9 @@ data:
   molecular_embeddings_csv: "molecular_embeddings.csv"
   molecular_embeddings_pt: "molecular_embeddings.pt"
 
+  molecular_gnn_pt: "molecular_gnn.pt"
+  molecular_gnn_index_csv: "molecular_gnn_index.csv"
+  
   models_dir: "models"
 
 preprocess:
