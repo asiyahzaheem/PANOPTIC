@@ -3,6 +3,7 @@ data:
 
   # INPUT
   cptac_dicom_dir: "/Volumes/ugly/PANOPTIC_DATA/CPTAC-PDA"
+  rnaseq_cct_dir: "/Volumes/ugly/PANOPTIC_DATA/cptac_rnaseq/RNAseq_Tumor.cct"
 
   # OUTPUTS
   cptac_nifti_dir: "/Volumes/ugly/PANOPTIC_DATA/cptac_nifti"
@@ -12,6 +13,13 @@ data:
   imaging_qc_log_csv: "imaging_qc_log.csv"
   imaging_embeddings_csv: "imaging_embeddings.csv"
   imaging_embeddings_pt: "imaging_embeddings.pt"
+
+  molecular_index_csv: "molecular_index.csv"
+  molecular_labels_csv: "molecular_labels.csv"
+  molecular_embeddings_csv: "molecular_embeddings.csv"
+  molecular_embeddings_pt: "molecular_embeddings.pt"
+
+  models_dir: "models"
 
 preprocess:
   hu_min: -150
@@ -24,3 +32,7 @@ preprocess:
 embeddings:
   batch_size: 4
   num_workers: 0
+
+molecular:
+  embedding_dim: 256
+  hidden_dim: 1024
