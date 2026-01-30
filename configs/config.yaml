@@ -43,10 +43,15 @@ molecular:
   hidden_dim: 1024
 
 gnn:
-  k: 8
+  num_classes: 4
+  knn_k: 10
+  knn_metric: "cosine"    
   hidden_dim: 128
-  num_layers: 2
-  dropout: 0.2
+  dropout: 0.5 # stronger regularizations
+  lr: 0.001
+  weight_decay: 0.0001
+  epochs: 300
+  patience: 50
 
 train_gnn:
   seed: 42

@@ -1,158 +1,175 @@
+# scripts/fusionGraph.py  (or scripts/build_fusion_graph.py)
 from __future__ import annotations
+
 from pathlib import Path
 import sys
 import numpy as np
-import torch
 import pandas as pd
+import torch
+from sklearn.model_selection import train_test_split
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.utils.io import load_config, ensure_dir
-from src.utils.seed import set_seed
+from src.gnn.buildGraph import (
+    standardize_fit, standardize_apply,
+    knn_edge_index, connect_to_train_edges
+)
 
-from torch_geometric.data import Data
+def norm_pid(s: pd.Series) -> pd.Series:
+    return s.astype(str).str.strip().str.upper()
 
+def can_stratify(y: np.ndarray) -> bool:
+    counts = np.bincount(y)
+    return counts.min() >= 2
 
-def load_imaging_embeddings(imaging_pt: Path):
-    """
-    Expect imaging_embeddings.pt to contain either:
-      - dict with keys: X_img (Tensor [N,D]), patient_id (list[str])
-      OR
-      - dict with embeddings keyed by patient_id
-    Adjust here if your imaging pt uses different keys.
-    """
-    obj = torch.load(imaging_pt, map_location="cpu")
-    if isinstance(obj, dict) and "X_img" in obj and "patient_id" in obj:
-        return obj["patient_id"], obj["X_img"].float()
+def is_z_col(c: str) -> bool:
+    # imaging features are z0..z511
+    if not c.startswith("z"):
+        return False
+    tail = c[1:]
+    return tail.isdigit()
 
-    # Fallback: if it's like {"patient_id": {"emb": [...]}, ...}
-    if isinstance(obj, dict) and all(isinstance(k, str) for k in obj.keys()):
-        patient_ids = []
-        feats = []
-        for pid, v in obj.items():
-            if isinstance(v, dict) and "embedding" in v:
-                feats.append(torch.tensor(v["embedding"], dtype=torch.float32))
-            elif torch.is_tensor(v):
-                feats.append(v.float())
-            else:
-                continue
-            patient_ids.append(pid)
-        X = torch.stack(feats, dim=0)
-        return patient_ids, X
-
-    raise ValueError("Unknown imaging_embeddings.pt structure. Open it once and match keys here.")
-
-
-def knn_edge_index(x: torch.Tensor, k: int) -> torch.Tensor:
-    """
-    Build undirected kNN graph edges from features x [N,D] using cosine similarity.
-    Returns edge_index [2, E]
-    """
-    x = torch.nn.functional.normalize(x, p=2, dim=1)
-    sim = x @ x.t()  # [N,N]
-    sim.fill_diagonal_(-1)
-
-    N = x.size(0)
-    knn = torch.topk(sim, k=min(k, N-1), dim=1).indices  # [N,k]
-
-    src = torch.arange(N).unsqueeze(1).repeat(1, knn.size(1)).reshape(-1)
-    dst = knn.reshape(-1)
-
-    # Make undirected by adding reverse edges
-    edge_index = torch.stack([torch.cat([src, dst]), torch.cat([dst, src])], dim=0)
-    return edge_index
-
-
-def stratified_split(y: np.ndarray, val_frac: float, test_frac: float, seed: int):
-    rng = np.random.default_rng(seed)
-    idx = np.arange(len(y))
-
-    train_mask = np.zeros(len(y), dtype=bool)
-    val_mask = np.zeros(len(y), dtype=bool)
-    test_mask = np.zeros(len(y), dtype=bool)
-
-    for cls in np.unique(y):
-        cls_idx = idx[y == cls]
-        rng.shuffle(cls_idx)
-
-        n = len(cls_idx)
-        n_test = int(round(n * test_frac))
-        n_val = int(round(n * val_frac))
-
-        test_i = cls_idx[:n_test]
-        val_i = cls_idx[n_test:n_test + n_val]
-        train_i = cls_idx[n_test + n_val:]
-
-        test_mask[test_i] = True
-        val_mask[val_i] = True
-        train_mask[train_i] = True
-
-    return train_mask, val_mask, test_mask
-
+def is_emb_col(c: str) -> bool:
+    # molecular features are emb_0..emb_255
+    if not c.startswith("emb_"):
+        return False
+    tail = c.split("_", 1)[1]
+    return tail.isdigit()
 
 def main():
     cfg = load_config("configs/config.yaml")
-    set_seed(cfg["train_gnn"]["seed"])
-
     artifacts = ensure_dir(Path(cfg["data"]["artifacts_dir"]))
-    imaging_pt = artifacts / Path(cfg["data"]["imaging_embeddings_pt"]).name
-    molecular_pt = artifacts / Path(cfg["data"]["molecular_gnn_pt"]).name
-    out_graph = artifacts / Path(cfg["data"]["fusion_graph_pt"]).name
 
-    mol = torch.load(molecular_pt, map_location="cpu")
-    mol_ids = mol["patient_id"]
-    X_mol = mol["X_mol"].float()
-    y = mol["y"].long()
+    img_csv = artifacts / cfg["data"]["imaging_embeddings_csv"]
+    mol_csv = artifacts / cfg["data"]["molecular_embeddings_csv"]
+    lab_csv = artifacts / cfg["data"]["molecular_labels_csv"]
+    out_pt  = artifacts / "fusion_graph.pt"
 
-    img_ids, X_img = load_imaging_embeddings(imaging_pt)
+    img = pd.read_csv(img_csv)
+    mol = pd.read_csv(mol_csv)
+    lab = pd.read_csv(lab_csv)
 
-    mol_map = {pid: i for i, pid in enumerate(mol_ids)}
-    img_map = {pid: i for i, pid in enumerate(img_ids)}
+    # --- validate required columns
+    for name, df in [("imaging_embeddings", img), ("molecular_embeddings", mol), ("molecular_labels", lab)]:
+        if "patient_id" not in df.columns:
+            raise ValueError(f"{name} must contain column: patient_id")
+    if "subtype_id" not in lab.columns:
+        raise ValueError("molecular_labels.csv must contain column: subtype_id")
 
-    common = sorted(set(mol_ids).intersection(set(img_ids)))
-    if len(common) < 8:
-        raise RuntimeError(f"Too few aligned patients: {len(common)}. Need more overlap to train a GNN.")
+    # --- normalize patient_id across all tables (prevents merge mismatch)
+    img["patient_id"] = norm_pid(img["patient_id"])
+    mol["patient_id"] = norm_pid(mol["patient_id"])
+    lab["patient_id"] = norm_pid(lab["patient_id"])
 
-    mol_idx = [mol_map[p] for p in common]
-    img_idx = [img_map[p] for p in common]
+    # --- align by patient_id: imaging ∩ molecular ∩ labels
+    df = img.merge(mol, on="patient_id", how="inner")
+    df = df.merge(lab[["patient_id", "subtype_id"]], on="patient_id", how="inner")
 
-    X_m = X_mol[mol_idx]
-    X_i = X_img[img_idx]
-    y_c = y[mol_idx]
+    if len(df) == 0:
+        raise ValueError("No aligned patients after merging imaging, molecular, and labels.")
 
-    x = torch.cat([X_i, X_m], dim=1)  # late fusion node feature
-    edge_index = knn_edge_index(x, k=cfg["gnn"]["k"])
+    # --- feature columns (based on your headers)
+    img_cols = [c for c in df.columns if is_z_col(c)]
+    mol_cols = [c for c in df.columns if is_emb_col(c)]
 
-    y_np = y_c.numpy()
-    tr, va, te = stratified_split(
-        y_np,
-        val_frac=cfg["train_gnn"]["val_frac"],
-        test_frac=cfg["train_gnn"]["test_frac"],
-        seed=cfg["train_gnn"]["seed"]
+    # sort by numeric index so columns are stable
+    img_cols = sorted(img_cols, key=lambda c: int(c[1:]))                  # z0..z511
+    mol_cols = sorted(mol_cols, key=lambda c: int(c.split("_")[1]))        # emb_0..emb_255
+
+    if len(img_cols) == 0 or len(mol_cols) == 0:
+        raise ValueError(
+            f"Could not find feature columns. Found img_cols={len(img_cols)} mol_cols={len(mol_cols)}. "
+            f"Expected imaging z0..zN and molecular emb_0..emb_N."
+        )
+
+    # --- build X = [img || mol], y, ids
+    x = np.concatenate(
+        [df[img_cols].to_numpy(dtype=np.float32), df[mol_cols].to_numpy(dtype=np.float32)],
+        axis=1
+    ).astype(np.float32)
+
+    y = df["subtype_id"].astype(int).to_numpy()
+    patient_ids = df["patient_id"].astype(str).tolist()
+
+    print(f"Aligned patients: {len(df)} | x={x.shape} | classes={sorted(set(y.tolist()))}")
+
+    # --- patient-level split (stratify if possible)
+    idx_all = np.arange(len(df))
+
+    strat1 = y if can_stratify(y) else None
+    idx_tr, idx_tmp, y_tr, y_tmp = train_test_split(
+        idx_all, y, test_size=0.2, random_state=42, stratify=strat1
     )
 
-    data = Data(
-        x=x,
-        y=y_c,
-        edge_index=edge_index,
+    strat2 = y_tmp if (strat1 is not None and can_stratify(y_tmp)) else None
+    idx_va, idx_te, y_va, y_te = train_test_split(
+        idx_tmp, y_tmp, test_size=0.5, random_state=42, stratify=strat2
     )
-    data.patient_id = common
-    data.train_mask = torch.tensor(tr)
-    data.val_mask = torch.tensor(va)
-    data.test_mask = torch.tensor(te)
 
-    torch.save(
-        {
-            "data": data,
-            "subtype_map": mol.get("subtype_map", None),
+    # --- standardize using TRAIN only
+    x_tr_std, mu, sd = standardize_fit(x[idx_tr])
+    x_va_std = standardize_apply(x[idx_va], mu, sd)
+    x_te_std = standardize_apply(x[idx_te], mu, sd)
+
+    # --- build graphs (no leakage)
+    k = int(cfg.get("gnn", {}).get("knn_k", 10))
+    metric = cfg.get("gnn", {}).get("knn_metric", "cosine")
+
+    edge_tr = knn_edge_index(x_tr_std, k=k, metric=metric)
+
+    # train+val graph: [train, val], val connected only to train
+    x_trva = np.concatenate([x_tr_std, x_va_std], axis=0)
+    edge_va_to_tr = connect_to_train_edges(x_tr_std, x_va_std, k=k, metric=metric)
+    edge_trva = torch.cat([edge_tr, edge_va_to_tr], dim=1)
+
+    # train+test graph: [train, test], test connected only to train
+    x_trte = np.concatenate([x_tr_std, x_te_std], axis=0)
+    edge_te_to_tr = connect_to_train_edges(x_tr_std, x_te_std, k=k, metric=metric)
+    edge_trte = torch.cat([edge_tr, edge_te_to_tr], dim=1)
+
+    pack = {
+        "patient_id": patient_ids,            # aligned ordering
+        "x": torch.from_numpy(x).float(),     # raw (unstandardized)
+        "y": torch.from_numpy(y).long(),
+        "splits": {
+            "train": idx_tr.tolist(),
+            "val": idx_va.tolist(),
+            "test": idx_te.tolist(),
         },
-        out_graph
-    )
-    print(f"[OK] wrote fusion graph: {out_graph}")
-    print(f"Aligned patients: {len(common)} | x={tuple(x.shape)} | edges={edge_index.shape[1]}")
+        "standardize": {
+            "mu": torch.from_numpy(mu).float(),
+            "sd": torch.from_numpy(sd).float(),
+        },
+        "feature_cols": {
+            "imaging": img_cols,
+            "molecular": mol_cols,
+        },
+        "graphs": {
+            "train": {
+                "x": torch.from_numpy(x_tr_std).float(),
+                "edge_index": edge_tr,
+            },
+            "train_val": {
+                "x": torch.from_numpy(x_trva).float(),
+                "edge_index": edge_trva,
+                "n_train": len(idx_tr),
+            },
+            "train_test": {
+                "x": torch.from_numpy(x_trte).float(),
+                "edge_index": edge_trte,
+                "n_train": len(idx_tr),
+            },
+        },
+    }
 
+    torch.save(pack, out_pt)
+    print(f"[OK] wrote fusion graph (pure tensors): {out_pt}")
+    print(f"[SHAPES] train_x={tuple(pack['graphs']['train']['x'].shape)} "
+          f"trva_x={tuple(pack['graphs']['train_val']['x'].shape)} "
+          f"trte_x={tuple(pack['graphs']['train_test']['x'].shape)}")
 
 if __name__ == "__main__":
     main()

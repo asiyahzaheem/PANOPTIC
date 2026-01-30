@@ -29,12 +29,37 @@ def main():
     X = df.drop(columns=["patient_id"])
 
     # ---------- Subtype assignment (ground truth) ----------
-    subtypes = assign_subtypes(df)
+    subtypes_str = assign_subtypes(df)
+
+    SUBTYPE_MAP = {
+    "Squamous": 0,
+    "Pancreatic Progenitor": 1,
+    "Progenitor": 1,  # in case your labels use this shorter name
+    "Pancreatic_Progenitor": 1,
+    "ADEX": 2,
+    "Immunogenic": 3,
+}
+
+    # convert to numeric subtype_id (and fail loudly if anything unexpected appears)
+    subtypes = []
+    bad = []
+    for s in subtypes_str:
+        if s not in SUBTYPE_MAP:
+            bad.append(s)
+            subtypes.append(None)
+        else:
+            subtypes.append(SUBTYPE_MAP[s])
+
+    if bad:
+        raise ValueError(f"Unknown subtype strings found: {sorted(set(bad))}")
+
+    subtypes = pd.Series(subtypes, dtype="int64").tolist()
 
     labels_df = pd.DataFrame({
         "patient_id": patient_ids,
-        "subtype": subtypes
+        "subtype_id": subtypes
     })
+
     labels_df.to_csv(labels_csv, index=False)
 
     # ---------- Embedding extraction ----------

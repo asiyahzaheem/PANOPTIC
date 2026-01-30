@@ -1,0 +1,9 @@
+PYTHONPATH=. python scripts/convert_cptac.py
+PYTHONPATH=. python scripts/imaging_qc.py
+PYTHONPATH=. python scripts/imaging_index.py
+PYTHONPATH=. python scripts/extract_embeddings.py
+PYTHONPATH=. python scripts/fusionGraph.py
+PYTHONPATH=. python scripts/trainGNN.py
+
+
+
