@@ -7,3 +7,4 @@ PYTHONPATH=. python scripts/trainGNN.py
 
 
 
+source .venv/bin/activate    
