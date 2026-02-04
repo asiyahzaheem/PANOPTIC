@@ -5,19 +5,20 @@ Merges imaging and molecular embeddings, splits patients, and builds KNN graphs 
 from __future__ import annotations
 from pathlib import Path
 import sys
-import numpy as np
-import pandas as pd
-import torch
-from sklearn.model_selection import train_test_split
-from src.utils.io import load_config, ensure_dir
-from src.gnn.buildGraph import (
-    standardize_fit, standardize_apply,
-    knn_edge_index, connect_to_train_edges
-)
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+import numpy as np
+import pandas as pd
+import torch
+from sklearn.model_selection import train_test_split
+from pdac.src.utils.io import load_config, ensure_dir
+from pdac.src.gnn.buildGraph import (
+    standardize_fit, standardize_apply,
+    knn_edge_index, connect_to_train_edges
+)
 
 def norm_pid(s: pd.Series) -> pd.Series:
     return s.astype(str).str.strip().str.upper()

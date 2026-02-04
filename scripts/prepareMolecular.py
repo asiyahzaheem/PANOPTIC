@@ -3,13 +3,14 @@ Converts the CCT molecular data file into a patient-by-gene CSV for downstream p
 """
 
 from pathlib import Path
-import pandas as pd
-from src.utils.io import load_config, resolve_path
 import sys
+import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from pdac.src.utils.io import load_config, resolve_path
 
 def main():
     cfg = load_config("configs/config.yaml")

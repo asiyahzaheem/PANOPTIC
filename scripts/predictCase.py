@@ -11,12 +11,13 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import pandas as pd
-from src.models.gnnModel import GraphSAGEClassifier
-from src.gnn.buildGraph import connect_to_train_edges
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from pdac.src.models.gnnModel import GraphSAGEClassifier
+from pdac.src.gnn.buildGraph import connect_to_train_edges
 
 # map class IDs to readable subtype names
 SUBTYPE_NAMES = {

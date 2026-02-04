@@ -1,4 +1,6 @@
 data:
+  # Force project root (avoids loading from wrong copy e.g. Documents/PANOPCTIC_v1)
+  project_root: "/Users/asiyah/PANOPTIC"
   base_dir: "/Volumes/ugly/PANOPTIC_DATA"
 
   # INPUT
@@ -10,7 +12,7 @@ data:
   rnaseq_per_patient_tsv_dir: "/Volumes/ugly/PANOPTIC_DATA/cptac_rnaseq/per_patient_tsv"
 
   cptac_nifti_dir: "/Volumes/ugly/PANOPTIC_DATA/cptac_nifti"
-  artifacts_dir: "/Users/asiyah/Documents/PANOPCTIC_v1/pdac/artifacts"
+  artifacts_dir: "artifacts"   # relative to project root (PANOPTIC/)
 
   imaging_index_csv: "imaging_index.csv"
   imaging_qc_log_csv: "imaging_qc_log.csv"
@@ -54,6 +56,7 @@ gnn:
   knn_metric: "cosine"    
   hidden_dim: 128
   dropout: 0.5 
+  temperature: 1.5   # softmax temperature (>1 = less overconfident)
   lr: 0.001
   weight_decay: 0.0001
   epochs: 300

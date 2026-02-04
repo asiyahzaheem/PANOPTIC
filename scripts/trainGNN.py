@@ -5,15 +5,16 @@ Trains the GNN model on the fusion graph (imaging + molecular features)
 from __future__ import annotations
 from pathlib import Path
 import sys
-import numpy as np
-import torch
-import torch.nn.functional as F
-from src.utils.io import load_config
-from src.models.gnnModel import GraphSAGEClassifier
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from pdac.src.utils.io import load_config
+from pdac.src.models.gnnModel import GraphSAGEClassifier
 
 # simple accuracy metric
 def accuracy(logits, y):

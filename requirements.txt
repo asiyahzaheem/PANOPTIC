@@ -1,5 +1,9 @@
 numpy
 pandas
+fastapi
+uvicorn
+python-multipart
+torch-geometric
 tqdm
 scikit-learn
 nibabel

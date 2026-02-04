@@ -7,11 +7,12 @@ from pathlib import Path
 import sys
 import argparse
 import pandas as pd
-from src.utils.io import load_config, ensure_dir
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from pdac.src.utils.io import load_config, ensure_dir
 
 def _safe_filename(s: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in s)

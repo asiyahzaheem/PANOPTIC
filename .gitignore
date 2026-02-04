@@ -5,3 +5,4 @@ __pycache__/
 *.pth
 .DS_Store
 .ipynb_checkpoints/
+artifacts/uploads/

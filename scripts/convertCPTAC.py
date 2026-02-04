@@ -7,11 +7,12 @@ from pathlib import Path
 import sys
 import SimpleITK as sitk
 from tqdm import tqdm
-from src.utils.io import load_config, ensure_dir
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from pdac.src.utils.io import load_config, ensure_dir
 
 def find_dicom_series_dirs(patient_dir: Path) -> list[Path]:
     # CPTAC canb e nested. Find dir containing dcm files

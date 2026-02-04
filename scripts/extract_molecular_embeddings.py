@@ -4,14 +4,13 @@ import sys
 import pandas as pd
 import torch
 
-from src.utils.io import load_config
-from pdac.molecular.embeddingModel import MolecularEmbedder
-from pdac.molecular.subtypeAssignment import assign_subtypes
-
-
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from pdac.src.utils.io import load_config
+from pdac.molecular.embeddingModel import MolecularEmbedder
+from pdac.molecular.subtypeAssignment import assign_subtypes
     
 @torch.no_grad()
 def main():

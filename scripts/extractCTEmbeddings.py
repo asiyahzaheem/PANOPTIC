@@ -11,13 +11,14 @@ from torch.utils.data import DataLoader
 import torchvision.transforms as T
 from tqdm import tqdm
 from pandas.errors import EmptyDataError
-from src.utils.io import load_config, ensure_dir
-from src.data.dataset import ScanKSliceDataset
-from pdac.src.models.cnnBackbone import ResNet18Embedder
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from pdac.src.utils.io import load_config, ensure_dir
+from pdac.src.data.dataset import ScanKSliceDataset
+from pdac.src.models.cnnBackbone import ResNet18Embedder
 
 # Covnerts 1-channel to 3-channel for ResNet 
 def repeat_to_3ch(x: torch.Tensor) -> torch.Tensor:
