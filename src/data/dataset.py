@@ -1,3 +1,7 @@
+"""
+PyTorch dataset for loading CT scans and extracting K slices per scan
+"""
+
 from __future__ import annotations
 from pathlib import Path
 import numpy as np
@@ -11,22 +15,14 @@ from src.data.preprocessing import (
     pick_k_slices_center,
 )
 
+# Dataset that loads CT scans and returns K representative slices per patient
 class ScanKSliceDataset(Dataset):
-    """
-    df columns required:
-      - patient_id
-      - filepath
-      - source (optional)
-    returns:
-      xk: [K,3,H,W]
-      patient_id: str
-      source: str
-    """
     def __init__(self, df, cfg, transform):
         self.df = df.reset_index(drop=True)
         self.cfg = cfg
         self.transform = transform
 
+        # read preprocessing settings from config
         self.hu_min = float(cfg["preprocess"]["hu_min"])
         self.hu_max = float(cfg["preprocess"]["hu_max"])
         self.k = int(cfg["preprocess"]["k_slices"])
@@ -41,18 +37,24 @@ class ScanKSliceDataset(Dataset):
         fp = str(row["filepath"])
         source = str(row.get("source", "UNKNOWN"))
 
+        # load the NIfTI scan and get the 3D volume
         img = nib.load(fp)
-        vol = img.get_fdata().astype(np.float32)     # [H,W,Z] or [X,Y,Z]
-        vol = to_slices_first(vol)                   # [Z,H,W]
+        vol = img.get_fdata().astype(np.float32)
+        # rearrange so slices are the first dimension
+        vol = to_slices_first(vol)
+        # window the HU values and normalize to [0,1]
         vol = clip_and_normalize_hu(vol, self.hu_min, self.hu_max)
 
-        slices = pick_k_slices_center(vol, self.k, self.pool)  # [K,H,W]
+        # pick K evenly-spaced slices from the center region
+        slices = pick_k_slices_center(vol, self.k, self.pool)
 
+        # apply transforms to each slice
         x_list = []
         for s in slices:
             s_u8 = (s * 255.0).clip(0, 255).astype(np.uint8)
-            xt = self.transform(s_u8)  # must output [3,224,224]
+            xt = self.transform(s_u8)
             x_list.append(xt)
 
-        xk = torch.stack(x_list, dim=0)  # [K,3,224,224]
+        # stack into [K,3,H,W] tensor
+        xk = torch.stack(x_list, dim=0)
         return xk, pid, source

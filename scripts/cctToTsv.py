@@ -1,19 +1,20 @@
+"""
+Converts a CPTAC .cct RNA-seq file into TSV files per patienrt
+"""
+
 from __future__ import annotations
 from pathlib import Path
 import sys
 import argparse
 import pandas as pd
+from src.utils.io import load_config, ensure_dir
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.utils.io import load_config, ensure_dir
-
-
 def _safe_filename(s: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in s)
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -33,15 +34,13 @@ def main():
     if not cct_path.exists():
         raise FileNotFoundError(f"CCT file not found: {cct_path}")
 
-    # CPTAC .cct is tab-delimited, with:
-    # - first column: genes
-    # - remaining columns: samples/patients
+    # Structure: first column = gene identifiers, remaining columns = samples
     df = pd.read_csv(cct_path, sep="\t")
 
     if df.shape[1] < 2:
         raise ValueError("CCT appears to have <2 columns. Check file format or delimiter.")
 
-    feature_col = df.columns[0]  # first column is gene identifiers
+    feature_col = df.columns[0]  # first column = gene identifiers
     genes = df[feature_col].astype(str)
 
     sample_cols = list(df.columns[1:])
@@ -55,11 +54,11 @@ def main():
     wrote = 0
     for sid in sample_cols:
         out_df = pd.DataFrame({"gene": genes, "value": df[sid].values})
-        out_path = out_dir / f"{_safe_filename(str(sid))}.tsv"
+        out_path = out_dir / f"{_safe_filename(str(sid))}.tsv" # Fix filename
         out_df.to_csv(out_path, sep="\t", index=False)
         wrote += 1
 
-    print(f"[OK] wrote {wrote} per-patient TSV files -> {out_dir}")
+    print(f"Wrote {wrote} per-patient TSV files -> {out_dir}!")
 
 
 if __name__ == "__main__":

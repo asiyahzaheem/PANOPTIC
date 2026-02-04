@@ -5,8 +5,8 @@ import pandas as pd
 import torch
 
 from src.utils.io import load_config
-from molecular.embedding_model import MolecularEmbedder
-from molecular.subtype_assignment import assign_subtypes
+from pdac.molecular.embeddingModel import MolecularEmbedder
+from pdac.molecular.subtypeAssignment import assign_subtypes
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -69,6 +69,15 @@ def main():
         hidden_dim=cfg["molecular"]["hidden_dim"],
     )
     model.eval()
+
+    # Save embedder weights so inference uses the exact same model later
+    embedder_ckpt = artifacts / cfg["data"]["molecular_embedder_ckpt"]
+    torch.save({"state_dict": model.state_dict(),
+                "input_dim": X.shape[1],
+                "emb_dim": cfg["molecular"]["embedding_dim"],
+                "hidden_dim": cfg["molecular"]["hidden_dim"]},
+               embedder_ckpt)
+    print(f"[OK] saved molecular embedder weights -> {embedder_ckpt}")
 
     emb = model(torch.tensor(X.values, dtype=torch.float32))
 

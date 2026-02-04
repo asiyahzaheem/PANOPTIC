@@ -1,18 +1,12 @@
 from __future__ import annotations
-from pathlib import Path
 import yaml
+from pathlib import Path
+from typing import Any, Dict
 
-def load_config(path: str | Path):
+def load_config(path: str | Path) -> Dict[str, Any]:
     path = Path(path)
-    with open(path, "r") as f:
+    with path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
-def ensure_dir(p: Path) -> Path:
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-def resolve_path(base: Path, maybe_path: str | Path) -> Path:
-    p = Path(maybe_path)
-    if p.is_absolute():
-        return p
-    return (base / p).resolve()
+def resolve_path(base_dir: str | Path, relative: str) -> Path:
+    return Path(base_dir) / relative

@@ -1,6 +1,8 @@
-# scripts/predict_case.py
-from __future__ import annotations
+"""
+Predicts pancreatic cancer subtype for a new patient using the trained GNN model
+"""
 
+from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
@@ -8,16 +10,15 @@ import sys
 import numpy as np
 import torch
 import torch.nn.functional as F
-import pandas as pd  # needed for CSV parsing
+import pandas as pd
+from src.models.gnnModel import GraphSAGEClassifier
+from src.gnn.buildGraph import connect_to_train_edges
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.models.gnnModel import GraphSAGEClassifier
-from src.gnn.buildGraph import connect_to_train_edges
-
-# Human-readable subtype names
+# map class IDs to readable subtype names
 SUBTYPE_NAMES = {
     0: "Squamous",
     1: "Pancreatic Progenitor",
@@ -25,6 +26,7 @@ SUBTYPE_NAMES = {
     3: "Immunogenic",
 }
 
+#Load the trained GNN model from checkpoint
 def _load_model(model_pt: Path, in_dim: int, num_classes: int, hidden: int, dropout: float, device: torch.device):
     ckpt = torch.load(model_pt, map_location="cpu", weights_only=False)
     state = ckpt["state_dict"]
@@ -33,11 +35,12 @@ def _load_model(model_pt: Path, in_dim: int, num_classes: int, hidden: int, drop
     model.eval()
     return model
 
+# Model output logits to softmax probabilities
 def _softmax_probs(logits: torch.Tensor) -> list[float]:
     return F.softmax(logits, dim=-1).detach().cpu().numpy().astype(float).tolist()
 
+# Bucket confidence into high/medium/low for easier interpretation
 def _confidence_level(conf: float) -> str:
-    # Simple, user-facing buckets
     if conf >= 0.80:
         return "high"
     if conf >= 0.60:
@@ -47,6 +50,7 @@ def _confidence_level(conf: float) -> str:
 def _pct(x: float) -> str:
     return f"{x*100:.0f}%"
 
+#Plain lang explanation of what the confidence level means
 def _explain_confidence(conf: float) -> str:
     level = _confidence_level(conf)
     if level == "high":
@@ -64,8 +68,9 @@ def _explain_confidence(conf: float) -> str:
         "This can happen when the input does not clearly match one subtype."
     )
 
+# Explains whether CT or molecular data drove the decision
 def _plain_language_why(modality_contrib: dict) -> str:
-    # modality_contrib keys: imaging, molecular (fractions)
+
     img = modality_contrib.get("imaging", 0.0)
     mol = modality_contrib.get("molecular", 0.0)
     if img >= 0.65:
@@ -82,8 +87,8 @@ def _plain_language_why(modality_contrib: dict) -> str:
         "Both the CT scan features and molecular data contributed meaningfully to this decision."
     )
 
+# Summarizes how similar past cases compare to the prediction
 def _neighbors_plain_summary(neighbors: list[dict], pred: int) -> str:
-    # neighbors may include subtype_id/subtype_name if y_train available
     if not neighbors:
         return "No similar past cases were available to compare against."
     # how many match predicted subtype
@@ -102,6 +107,7 @@ def _neighbors_plain_summary(neighbors: list[dict], pred: int) -> str:
         "Similarity supports the prediction, but labels for neighbors were not available."
     )
 
+# Build complete English summary for non-technical users
 def _patient_friendly_simple_text(pred_name: str, conf: float, modality_contrib: dict, neighbors: list[dict], pred: int) -> str:
     return (
         f"**Predicted subtype:** {pred_name}\n"
@@ -112,8 +118,8 @@ def _patient_friendly_simple_text(pred_name: str, conf: float, modality_contrib:
         "Important: this is a software prediction to support clinicians. It may be wrong and should not be used alone."
     )
 
+# Format probabilities with both class IDs and subtype names
 def _format_probabilities(probs: list[float]) -> dict:
-    # Return both numeric + named
     out = {}
     for i, p in enumerate(probs):
         out[str(i)] = float(p)
@@ -122,11 +128,13 @@ def _format_probabilities(probs: list[float]) -> dict:
         out_named[SUBTYPE_NAMES.get(i, str(i))] = float(p)
     return {"by_class_id": out, "by_subtype_name": out_named}
 
+# Extract the list of patient IDs from the training set
 def _train_patient_ids(fusion_pack: dict) -> list[str]:
     patient_ids_all = fusion_pack["patient_id"]
     idx_tr = fusion_pack["splits"]["train"]
     return [patient_ids_all[i] for i in idx_tr]
 
+# Find the most similar training patients using cosine similarity
 def _neighbors_explanation(
     x_tr_std: torch.Tensor,
     x_new_std: torch.Tensor,
@@ -134,12 +142,8 @@ def _neighbors_explanation(
     y_train: np.ndarray | None,
     topk: int = 5,
 ):
-    """
-    Neighbor-based explanation: show closest training patients in standardized space.
-    Using cosine similarity. Optionally include their label if y_train is provided.
-    """
-    a = x_tr_std.detach().cpu().numpy()  # [N_train, D]
-    b = x_new_std.detach().cpu().numpy() # [1, D]
+    a = x_tr_std.detach().cpu().numpy()
+    b = x_new_std.detach().cpu().numpy()
 
     a_norm = a / (np.linalg.norm(a, axis=1, keepdims=True) + 1e-12)
     b_norm = b / (np.linalg.norm(b, axis=1, keepdims=True) + 1e-12)
@@ -160,10 +164,8 @@ def _neighbors_explanation(
 
     return out, sims  # sims returned in case you want additional stats
 
+# Compute gradient-based feature importance for the new patient
 def _grad_for_new_node(model, x_trnew: torch.Tensor, edge_trnew: torch.Tensor, new_idx: int, target_class: int) -> np.ndarray:
-    """
-    Gradient attribution for the new node only: |d logit(target) / d x_new|
-    """
     x = x_trnew.clone().detach().requires_grad_(True)
     logits = model(x, edge_trnew)[new_idx]
     score = logits[target_class]
@@ -171,6 +173,7 @@ def _grad_for_new_node(model, x_trnew: torch.Tensor, edge_trnew: torch.Tensor, n
     g = x.grad[new_idx].detach().cpu().numpy().reshape(-1)
     return g
 
+# Compute feature importance using integrated gradients
 def _integrated_gradients_new_node(
     model,
     x_tr: torch.Tensor,
@@ -180,10 +183,6 @@ def _integrated_gradients_new_node(
     steps: int,
     target_class: int,
 ):
-    """
-    Integrated gradients for the new node only.
-    Baseline: zero vector in standardized space.
-    """
     baseline = torch.zeros_like(x_new)
     attributions = torch.zeros_like(x_new)
 
@@ -205,12 +204,14 @@ def _integrated_gradients_new_node(
     attributions = (x_new - baseline) * (attributions / steps)
     return attributions.detach().cpu().numpy().reshape(-1)
 
+# Calculate how much CT vs molecular features contributed to the prediction
 def _split_modality(abs_attr: np.ndarray, z_dim: int) -> dict:
     img = float(abs_attr[:z_dim].sum())
     mol = float(abs_attr[z_dim:].sum())
     total = img + mol + 1e-12
     return {"imaging": img / total, "molecular": mol / total}
 
+# List the most important feature dimensions
 def _top_features(abs_attr: np.ndarray, z_dim: int, topk: int):
     idx = np.argsort(-abs_attr)[:topk]
     top = []
@@ -220,6 +221,7 @@ def _top_features(abs_attr: np.ndarray, z_dim: int, topk: int):
         top.append({"feature": feat, "importance": float(abs_attr[j])})
     return top
 
+# Build a simplified explanation for non-technical users
 def _build_simple_explanation(
     *,
     probs: list[float],
@@ -239,7 +241,7 @@ def _build_simple_explanation(
 
     contrib = _split_modality(abs_attr, z_dim=z_dim)
 
-    # Keep only a few numbers in simple mode
+    # package key info for simple mode
     simple_numbers = {
         "confidence": conf,
         "confidence_level": _confidence_level(conf),
@@ -269,6 +271,7 @@ def _build_simple_explanation(
         "closest_similar_patients": neighbors[:3],      # short list for patient view
     }
 
+# Build a detailed explanation with technical info for researchers
 def _build_detailed_explanation(
     *,
     probs: list[float],
@@ -303,7 +306,7 @@ def _build_detailed_explanation(
 
     pred_name = SUBTYPE_NAMES.get(pred, str(pred))
 
-    # Make the first thing a readable narrative
+    # start with plain-language summary
     patient_text = _patient_friendly_simple_text(
         pred_name=pred_name,
         conf=conf,
@@ -312,7 +315,7 @@ def _build_detailed_explanation(
         pred=pred,
     )
 
-    # Provide extra info in a separate section
+    # add technical details for researchers
     probs_named = _format_probabilities(probs)["by_subtype_name"]
     probs_sorted = sorted(probs_named.items(), key=lambda kv: -kv[1])
     runner_up = probs_sorted[1][0] if len(probs_sorted) > 1 else None
@@ -327,8 +330,8 @@ def _build_detailed_explanation(
                 "molecular": _pct(contrib["molecular"]),
             },
             "top_probabilities": probs_sorted,
-            "closest_similar_patients": neighbors,  # includes subtype labels if available
-            # Keep technical lists available but clearly labeled as “advanced”
+            "closest_similar_patients": neighbors,
+            # technical details for debugging and research
             "advanced": {
                 "integrated_gradients_steps": int(ig_steps),
                 "top_factors_internal_dimensions": _top_features(abs_attr, z_dim=z_dim, topk=25),
@@ -348,6 +351,7 @@ def _build_detailed_explanation(
     }
 
 
+# Run prediction for a new patient given their CT and molecular embeddings
 def predict_from_vectors(
     fusion_pack: dict,
     model_pt: Path,
@@ -358,7 +362,7 @@ def predict_from_vectors(
 ) -> dict:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # training graph tensors (already standardized)
+    # load training graph (already standardized)
     gtr = fusion_pack["graphs"]["train"]
     x_tr_std = gtr["x"].to(device)
     edge_tr = gtr["edge_index"].to(device)
@@ -367,21 +371,20 @@ def predict_from_vectors(
     mu = fusion_pack["standardize"]["mu"].to(device)
     sd = fusion_pack["standardize"]["sd"].to(device)
 
-    # feature checks
+    # combine CT and molecular features into one vector
     z_vec = z_vec.astype(np.float32).reshape(1, -1)
     emb_vec = emb_vec.astype(np.float32).reshape(1, -1)
-    z_dim = int(z_vec.shape[1])  # derive dynamically
+    z_dim = int(z_vec.shape[1])
     x_raw = np.concatenate([z_vec, emb_vec], axis=1).astype(np.float32)
 
     in_dim = int(x_tr_std.shape[1])
     if int(x_raw.shape[1]) != in_dim:
         raise ValueError(f"Feature dim mismatch: got {x_raw.shape[1]} expected {in_dim}")
 
-    # standardize the new node using train mu/sd (same as graph build)
+    # z-score normalize using training set stats
     x_new_std = (torch.from_numpy(x_raw).to(device) - mu) / (sd + 1e-12)
 
-    # attach new node to train graph (inductive)
-    # If you later store k/metric in fusion_pack, read from there. For now keep consistent defaults.
+    # connect new patient to nearest training patients in the graph
     k = 10
     metric = "cosine"
     edge_new_to_tr = connect_to_train_edges(
@@ -391,12 +394,12 @@ def predict_from_vectors(
         metric=metric
     ).to(device)
 
-    # build combined graph
+    # build combined graph with new patient added
     x_trnew = torch.cat([x_tr_std, x_new_std], dim=0)
     edge_trnew = torch.cat([edge_tr, edge_new_to_tr], dim=1)
     new_idx = x_trnew.shape[0] - 1
 
-    # load model + config from ckpt
+    # load model
     ckpt = torch.load(model_pt, map_location="cpu", weights_only=False)
     cfg = ckpt.get("cfg", {})
     num_classes = int(cfg.get("gnn", {}).get("num_classes", 4))
@@ -405,7 +408,7 @@ def predict_from_vectors(
 
     model = _load_model(model_pt, in_dim=in_dim, num_classes=num_classes, hidden=hidden, dropout=dropout, device=device)
 
-    # prediction
+    # run the model to get prediction
     with torch.no_grad():
         logits = model(x_trnew, edge_trnew)[new_idx]
         probs = _softmax_probs(logits)
@@ -423,12 +426,11 @@ def predict_from_vectors(
         ],
     }
 
-    # ----- Explanation
+    # add explanation if requested
     if explain and explain != "none":
         patient_ids_train = _train_patient_ids(fusion_pack)
 
-        # Optional: get labels for train patients if available in fusion_pack
-        # Since fusion_pack['y'] is aligned to ALL patients, map train indices -> labels
+        # get training labels if available
         y_train = None
         try:
             y_all = fusion_pack["y"].detach().cpu().numpy()
@@ -438,7 +440,7 @@ def predict_from_vectors(
             y_train = None
 
         if explain == "simple":
-            # use plain gradients (fast) then format user-friendly
+            # use fast gradient method for feature importance
             g = _grad_for_new_node(model, x_trnew, edge_trnew, new_idx, pred)
             abs_attr = np.abs(g)
             result["explanation"] = _build_simple_explanation(
@@ -471,16 +473,15 @@ def predict_from_vectors(
 
     return result
 
+# Load feature vector from JSON file
 def _parse_vector_json(path: Path) -> np.ndarray:
     obj = json.loads(path.read_text())
     if isinstance(obj, dict) and "values" in obj:
         obj = obj["values"]
     return np.asarray(obj, dtype=np.float32)
 
+# Extract feature vector from a single-row CSV file
 def _parse_vector_csv(path: Path, prefix: str) -> np.ndarray:
-    """
-    For CSV with single row, columns like z0..z511 or emb_0..emb_255.
-    """
     df = pd.read_csv(path)
     cols = [c for c in df.columns if c.startswith(prefix)]
     if len(cols) == 0:
@@ -514,7 +515,7 @@ def main():
     fusion_pack = torch.load(args.fusion_graph, map_location="cpu", weights_only=False)
     model_pt = Path(args.model)
 
-    # Debug option: reuse an existing patient's fused features to verify inference
+    # debug mode: test with an existing patient from training data
     if args.test_from_existing_patient:
         pid = args.test_from_existing_patient.strip().upper()
         pid_list = [p.upper() for p in fusion_pack["patient_id"]]
@@ -523,11 +524,7 @@ def main():
         i = pid_list.index(pid)
         x_raw = fusion_pack["x"][i].numpy()
 
-        # infer z_dim from training feature contract:
-        # We assume z is first block and molecular is second block.
-        # Since your imaging is 512 and molecular is 256, total=768, but we won’t hard-code.
-        # Use molecular embeddings length from your molecular CSV if you want, but here we split by 512
-        # only when known. If you ever change dims, pass vectors via JSON/CSV instead.
+        # split into CT (first 512) and molecular (rest) features
         z_dim = 512
         z = x_raw[:z_dim]
         emb = x_raw[z_dim:]

@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.data.dataset import ScanKSliceDataset
-from src.models.cnn_backbone import ResNet18Embedder
+from pdac.src.models.cnnBackbone import ResNet18Embedder
 
 def repeat_to_3ch(x: torch.Tensor) -> torch.Tensor:
     return x.repeat(3, 1, 1)
