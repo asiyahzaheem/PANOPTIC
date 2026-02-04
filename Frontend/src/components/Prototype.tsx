@@ -8,11 +8,22 @@ import { useToast } from "@/hooks/use-toast";
 
 type AnalysisState = "idle" | "uploading" | "analyzing" | "complete" | "error";
 
+export interface ExplanationSection {
+  heading: string;
+  body: string;
+  highlight?: string;
+  breakdown?: string;
+  similar_cases?: { subtype: string; similarity: string; matches_prediction: boolean }[];
+  alternatives?: { name: string; percentage: number }[];
+}
+
 export interface AnalysisResult {
   subtype: string;
   probability: number;
   simpleExplanation: string;
   detailedExplanation: string;
+  /** Human-friendly structured sections for detailed view (from API) */
+  explanationSections?: ExplanationSection[];
 }
 
 const CT_FORMATS = [".nii", ".nii.gz", ".dcm", ".dicom"];
@@ -128,13 +139,12 @@ export const Prototype = () => {
           ? data.explanation.summary_text
           : data?.explanation?.summary_text || "No explanation returned.";
 
-      const detailedText =
-        data?.explanation?.mode === "detailed"
-          ? `${data.explanation.summary_text}\n\n${JSON.stringify(
-              data.explanation.details,
-              null,
-              2
-            )}`
+      const details = data?.explanation?.details;
+      const sections = details?.sections;
+      const detailedText = sections
+        ? data.explanation.summary_text
+        : data?.explanation?.mode === "detailed"
+          ? `${data.explanation.summary_text}\n\n${JSON.stringify(details || data.explanation, null, 2)}`
           : JSON.stringify(data.explanation, null, 2);
 
       setResult({
@@ -142,6 +152,7 @@ export const Prototype = () => {
         probability: confidence,
         simpleExplanation: simpleText,
         detailedExplanation: detailedText,
+        explanationSections: sections,
       });
 
       setAnalysisState("complete");

@@ -1,7 +1,78 @@
 import { motion } from "framer-motion";
 import { useState } from "react";
-import { RotateCcw, ChevronDown, ChevronUp } from "lucide-react";
-import type { AnalysisResult } from "./Prototype";
+import { RotateCcw, ChevronDown, ChevronUp, Check, X } from "lucide-react";
+import type { AnalysisResult, ExplanationSection } from "./Prototype";
+
+function DetailedExplanationView({ sections }: { sections: ExplanationSection[] }) {
+  return (
+    <div className="space-y-0">
+      {sections.map((section, i) => (
+        <div
+          key={i}
+          className={`space-y-3 ${i > 0 ? "pt-6 mt-6 border-t border-border/50" : ""}`}
+        >
+          <h5 className="font-serif text-lg font-medium text-foreground">
+            {section.heading}
+          </h5>
+          <p className="text-muted-foreground leading-relaxed">{section.body}</p>
+          {section.highlight && (
+            <div className="inline-flex items-center px-3 py-1.5 rounded-lg bg-primary/10 text-primary text-sm font-medium">
+              {section.highlight}
+            </div>
+          )}
+          {section.breakdown && (
+            <div className="flex flex-wrap gap-2 text-sm">
+              <span className="text-muted-foreground">{section.breakdown}</span>
+            </div>
+          )}
+          {section.similar_cases && section.similar_cases.length > 0 && (
+            <div className="mt-3 space-y-2">
+              <p className="text-sm font-medium text-foreground/90">
+                Similar cases the model compared to:
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {section.similar_cases.map((c, j) => (
+                  <span
+                    key={j}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm ${
+                      c.matches_prediction
+                        ? "bg-green-500/10 text-green-700 dark:text-green-400"
+                        : "bg-muted text-muted-foreground"
+                    }`}
+                  >
+                    {c.matches_prediction ? (
+                      <Check className="w-3.5 h-3.5" />
+                    ) : (
+                      <X className="w-3.5 h-3.5" />
+                    )}
+                    {c.subtype} ({c.similarity})
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          {section.alternatives && section.alternatives.length > 0 && (
+            <div className="mt-3 space-y-2">
+              <p className="text-sm font-medium text-foreground/90">
+                Other subtypes considered:
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {section.alternatives.map((a, j) => (
+                  <span
+                    key={j}
+                    className="inline-flex items-center px-3 py-1.5 rounded-lg bg-muted/80 text-muted-foreground text-sm"
+                  >
+                    {a.name} — {a.percentage}%
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 interface ResultsDisplayProps {
   result: AnalysisResult;
@@ -99,37 +170,41 @@ export const ResultsDisplay = ({ result, onReset }: ResultsDisplayProps) => {
           className="bg-muted/30 rounded-2xl p-6"
         >
           {showDetailed ? (
-            <div className="prose prose-sm max-w-none">
-              <div className="whitespace-pre-wrap text-muted-foreground leading-relaxed">
-                {result.detailedExplanation.split("\n").map((line, index) => {
-                  if (line.startsWith("**") && line.endsWith("**")) {
-                    return (
-                      <h5
-                        key={index}
-                        className="font-medium text-foreground mt-4 mb-2 first:mt-0"
-                      >
-                        {line.replace(/\*\*/g, "")}
-                      </h5>
+            result.explanationSections?.length ? (
+              <DetailedExplanationView sections={result.explanationSections} />
+            ) : (
+              <div className="prose prose-sm max-w-none">
+                <div className="whitespace-pre-wrap text-muted-foreground leading-relaxed">
+                  {result.detailedExplanation.split("\n").map((line, index) => {
+                    if (line.startsWith("**") && line.endsWith("**")) {
+                      return (
+                        <h5
+                          key={index}
+                          className="font-medium text-foreground mt-4 mb-2 first:mt-0"
+                        >
+                          {line.replace(/\*\*/g, "")}
+                        </h5>
+                      );
+                    }
+                    if (line.startsWith("- ")) {
+                      return (
+                        <div key={index} className="flex gap-2 ml-2 my-1">
+                          <span className="text-primary">•</span>
+                          <span>{line.substring(2)}</span>
+                        </div>
+                      );
+                    }
+                    return line ? (
+                      <p key={index} className="my-1">
+                        {line}
+                      </p>
+                    ) : (
+                      <br key={index} />
                     );
-                  }
-                  if (line.startsWith("- ")) {
-                    return (
-                      <div key={index} className="flex gap-2 ml-2 my-1">
-                        <span className="text-primary">•</span>
-                        <span>{line.substring(2)}</span>
-                      </div>
-                    );
-                  }
-                  return line ? (
-                    <p key={index} className="my-1">
-                      {line}
-                    </p>
-                  ) : (
-                    <br key={index} />
-                  );
-                })}
+                  })}
+                </div>
               </div>
-            </div>
+            )
           ) : (
             <p className="text-muted-foreground leading-relaxed">
               {result.simpleExplanation}
