@@ -28,7 +28,7 @@ export interface AnalysisResult {
 
 const CT_FORMATS = [".nii", ".nii.gz", ".dcm", ".dicom"];
 const MOLECULAR_FORMATS = [".csv", ".tsv", ".txt", ".vcf"];
-const API_BASE = "https://panoptic-render-1.onrender.com";
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 // Extract patient ID from filename (assumes format like "patient_123_scan.nii" or "123_data.csv")
 const extractPatientId = (filename: string): string | null => {
