@@ -10,6 +10,9 @@
 - [Architecture](#architecture)
 - [Project Structure](#project-structure)
 - [Setup](#setup)
+- [Pipeline Scripts (Run in Order)](#pipeline-scripts-run-in-order)
+- [Running Locally](#running-locally)
+- [Prediction](#prediction)
 - [Running the Demo](#running-the-demo)
 - [Testing Data](#testing-data)
 - [Configuration](#configuration)
@@ -106,7 +109,31 @@ PANOPTIC/
 
 ## Setup
 
-### Backend (Python)
+### 1. Download Datasets
+
+**CT and molecular datasets** must be downloaded from the **submission Google Drive** folder.
+
+- **CT scans**: NIfTI format (`.nii` or `.nii.gz`), or DICOM if you will convert them
+- **Molecular data**: Either a CCT file (genes × samples) for the full pipeline, or per-patient TSVs with `emb_0`–`emb_255` for prediction
+
+Place the downloaded data in a directory of your choice (e.g. `PANOPTIC_DATA/`).
+
+### 2. Configure Paths
+
+Edit `configs/config.yaml` and set the data paths to match your layout:
+
+| Config key | Description | Example |
+|------------|-------------|---------|
+| `data.project_root` | Absolute path to PANOPTIC repo | `"/Users/you/PANOPTIC"` |
+| `data.base_dir` | Base directory for datasets | `"/path/to/PANOPTIC_DATA"` |
+| `data.cptac_dicom_dir` | DICOM folders (if converting) | `"{base_dir}/CPTAC-PDA"` |
+| `data.cptac_nifti_dir` | NIfTI CT scans | `"{base_dir}/cptac_nifti"` |
+| `data.rnaseq_cct_dir` | RNA-seq CCT file | `"{base_dir}/cptac_rnaseq/RNAseq_Tumor.cct"` |
+| `data.rnaseq_per_patient_tsv_dir` | Per-patient molecular TSVs | `"{base_dir}/cptac_rnaseq/per_patient_tsv"` |
+
+Use absolute paths or paths relative to `project_root` as appropriate.
+
+### 3. Backend (Python)
 
 ```bash
 # Create and activate virtual environment
@@ -120,7 +147,7 @@ pip install -r requirements.txt
 
 **Requirements**: Python 3.8+, PyTorch, torch-geometric, FastAPI, nibabel, pandas, scikit-learn, etc. (see `requirements.txt`)
 
-### Frontend (Node.js)
+### 4. Frontend (Node.js)
 
 ```bash
 cd Frontend
@@ -132,45 +159,115 @@ npm install
 
 ---
 
-## Running the Demo
+## Pipeline Scripts (Run in Order)
 
-You can run the demo in two ways:
+From a clean setup, run these scripts **in order** to build artifacts and train the model:
 
-### Option 1: Local Hosting
+| Step | Script | Purpose |
+|------|--------|---------|
+| 1 | `convertCPTAC.py` | *(Optional)* Convert DICOM → NIfTI. Skip if CT data is already NIfTI. |
+| 2 | `imagingIndex.py` | Build `imaging_index.csv` from NIfTI files in `cptac_nifti_dir` |
+| 3 | `cctToTsv.py` | Split CCT into per-patient TSVs *(if using CCT)* |
+| 4 | `prepareMolecular.py` | Build `molecular_index.csv` from CCT (patients × genes) |
+| 5 | `exportMolecularCols.py` | Export `molecular_feature_cols.txt` from molecular index |
+| 6 | `extractCTEmbeddings.py` | Extract 512-d CT embeddings → `imaging_embeddings.csv` |
+| 7 | `extract_molecular_embeddings.py` | Extract 256-d molecular embeddings → `molecular_embeddings.csv`, `molecular_labels.csv` |
+| 8 | `fusionGraph.py` | Merge imaging + molecular, build k-NN graph → `fusion_graph.pt` |
+| 9 | `trainGNN.py` | Train GraphSAGE → `models/gnn_best.pt` |
 
-Run both backend and frontend locally.
+**Example** (from project root):
 
-**1. Start the backend**
+```bash
+source .venv/bin/activate
+PYTHONPATH=. python scripts/imagingIndex.py
+PYTHONPATH=. python scripts/prepareMolecular.py
+PYTHONPATH=. python scripts/exportMolecularCols.py
+PYTHONPATH=. python scripts/extractCTEmbeddings.py
+PYTHONPATH=. python scripts/extract_molecular_embeddings.py
+PYTHONPATH=. python scripts/fusionGraph.py
+PYTHONPATH=. python scripts/trainGNN.py
+```
+
+**Note**: If your CT data is DICOM, run `convertCPTAC.py` first. If molecular data is per-patient TSVs, adapt `prepareMolecular.py` or create `molecular_index.csv` manually to match your layout.
+
+---
+
+## Running Locally
+
+### Backend
 
 ```bash
 source .venv/bin/activate   # or .venv\Scripts\activate on Windows
 PYTHONPATH=. uvicorn pdac.api.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-**2. Start the frontend**
+### Frontend
 
 ```bash
 cd Frontend
 npm run dev
 ```
 
-**3. Configure API URL**
+### API URL
 
-Create `Frontend/.env` (or use defaults):
+Create `Frontend/.env`:
 
 ```
 VITE_API_BASE_URL=http://localhost:8000
 ```
 
-If `VITE_API_BASE_URL` is not set, the frontend defaults to `http://localhost:8000`.
+If unset, the frontend defaults to `http://localhost:8000`.
 
-**4. Open the app**
+### Open the App
 
-Visit `http://localhost:5173` (or the port Vite shows) and scroll to the **Interactive Demo** section.
+Visit `http://localhost:5173` and scroll to the **Interactive Demo** section.
 
 ---
 
-### Option 2: PanOptic Online Domain (In Progress)
+## Prediction
+
+### Via API / Frontend (Raw CT + Molecular Files)
+
+Upload a CT scan and molecular TSV via the web UI, or use curl:
+
+```bash
+curl -X POST \
+  -F "ct_file=@patient1_scan.nii.gz" \
+  -F "molecular_file=@patient1_mol.tsv" \
+  -F "explain=detailed" \
+  http://localhost:8000/predict
+```
+
+Use the **same patient’s** CT and molecular file for each request (see [Testing Data](#testing-data)).
+
+### Via CLI (`predictCase.py`)
+
+For pre-extracted embeddings or debugging with an existing patient:
+
+```bash
+# Using pre-extracted z (CT) and emb (molecular) CSV files
+PYTHONPATH=. python scripts/predictCase.py \
+  --z_csv path/to/z_embeddings.csv \
+  --emb_csv path/to/molecular_embeddings.csv \
+  --explain detailed
+
+# Debug: run prediction using an existing patient from the fusion graph
+PYTHONPATH=. python scripts/predictCase.py \
+  --test_from_existing_patient C3N-00512 \
+  --explain simple
+```
+
+---
+
+## Running the Demo
+
+### Local Hosting
+
+See [Running Locally](#running-locally) for backend and frontend setup. Once both are running, visit `http://localhost:5173` and scroll to the **Interactive Demo** section. Use the 5 test pairs from the submission Google Drive (see [Testing Data](#testing-data)).
+
+---
+
+### PanOptic Online Domain (In Progress)
 
 A hosted version is being deployed at **panopticai.online**.
 
@@ -189,14 +286,14 @@ VITE_API_BASE_URL=https://panoptic-render-1.onrender.com
 
 ## Testing Data
 
-**5 pairs of test data** are provided in the **submission Google Drive** folder.
+**5 pairs of test data** are provided in the **submission Google Drive** folder. Download these to run predictions.
 
 Each pair consists of:
 
 1. A **CT scan** (NIfTI format: `.nii` or `.nii.gz`)
 2. A **molecular data file** (TSV format with `emb_0`–`emb_255` columns)
 
-**Important**: Use the **same patient’s** CT and TSV together. The filenames must imply the same patient ID (e.g. `C3N-00512_scan.nii` and `C3N-00512_mol.tsv`). The frontend checks that patient IDs match before analysis.
+**Important**: Always use the **same patient’s** CT and TSV together. For example, `patient1_scan.nii.gz` must be paired with `patient1_mol.tsv` — never mix patients. The frontend validates that patient IDs match before analysis.
 
 **Patient ID extraction rules** (from filenames):
 
