@@ -1,34 +1,35 @@
-/// <reference types="vite/client" />
 import React, { useRef, useState } from "react";
 import { motion, AnimatePresence, useInView } from "framer-motion";
-import { Upload, FileText, Dna, AlertCircle } from "lucide-react";
+import { Upload, FileText, Dna, AlertCircle, FlaskConical } from "lucide-react";
 import { AnalysisLoader } from "./AnalysisLoader";
 import { ResultsDisplay } from "./ResultsDisplay";
 import { useToast } from "../hooks/use-toast";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "./ui/select";
+
+const SAMPLE_DATASETS = [
+  { id: "C3N-01716", label: "C3N-01716" },
+  { id: "C3L-03639", label: "C3L-03639" },
+  { id: "C3L-01031", label: "C3L-01031" },
+  { id: "C3L-03123", label: "C3L-03123" },
+];
 
 type AnalysisState = "idle" | "uploading" | "analyzing" | "complete" | "error";
-
-export interface ExplanationSection {
-  heading: string;
-  body: string;
-  highlight?: string;
-  breakdown?: string;
-  similar_cases?: { subtype: string; similarity: string; matches_prediction: boolean }[];
-  alternatives?: { name: string; percentage: number }[];
-}
 
 export interface AnalysisResult {
   subtype: string;
   probability: number;
   simpleExplanation: string;
   detailedExplanation: string;
-  /** Human-friendly structured sections for detailed view (from API) */
-  explanationSections?: ExplanationSection[];
 }
 
 const CT_FORMATS = [".nii", ".nii.gz", ".dcm", ".dicom"];
 const MOLECULAR_FORMATS = [".csv", ".tsv", ".txt", ".vcf"];
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 // Extract patient ID from filename (assumes format like "patient_123_scan.nii" or "123_data.csv")
 const extractPatientId = (filename: string): string | null => {
@@ -63,6 +64,7 @@ export const Prototype = () => {
   const [molecularFile, setMolecularFile] = useState<File | null>(null);
   const [analysisState, setAnalysisState] = useState<AnalysisState>("idle");
   const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [selectedSample, setSelectedSample] = useState<string>("");
 
   const handleFileUpload = (
     e: React.ChangeEvent<HTMLInputElement>,
@@ -116,7 +118,7 @@ export const Prototype = () => {
 
       setAnalysisState("analyzing");
 
-      const res = await fetch(`${API_BASE}/predict`, {
+      const res = await fetch("https://mario-nathan-come-lobby.trycloudflare.com/predict", {
         method: "POST",
         body: formData,
       });
@@ -136,12 +138,13 @@ export const Prototype = () => {
           ? data.explanation.summary_text
           : data?.explanation?.summary_text || "No explanation returned.";
 
-      const details = data?.explanation?.details;
-      const sections = details?.sections;
-      const detailedText = sections
-        ? data.explanation.summary_text
-        : data?.explanation?.mode === "detailed"
-          ? `${data.explanation.summary_text}\n\n${JSON.stringify(details || data.explanation, null, 2)}`
+      const detailedText =
+        data?.explanation?.mode === "detailed"
+          ? `${data.explanation.summary_text}\n\n${JSON.stringify(
+              data.explanation.details,
+              null,
+              2
+            )}`
           : JSON.stringify(data.explanation, null, 2);
 
       setResult({
@@ -149,7 +152,6 @@ export const Prototype = () => {
         probability: confidence,
         simpleExplanation: simpleText,
         detailedExplanation: detailedText,
-        explanationSections: sections,
       });
 
       setAnalysisState("complete");
@@ -179,6 +181,7 @@ export const Prototype = () => {
     setMolecularFile(null);
     setAnalysisState("idle");
     setResult(null);
+    setSelectedSample("");
   };
 
   return (
@@ -317,8 +320,52 @@ export const Prototype = () => {
                   </div>
                 )}
 
-                {/* Analyze button */}
-                <div className="text-center">
+                {/* Buttons */}
+                <div className="text-center flex flex-col sm:flex-row items-center justify-center gap-4">
+                  <div className="flex items-center gap-2">
+                    <Select value={selectedSample} onValueChange={setSelectedSample}>
+                      <SelectTrigger className="w-[180px] rounded-full border-primary text-primary">
+                        <FlaskConical className="w-4 h-4 mr-2" />
+                        <SelectValue placeholder="Select Sample" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {SAMPLE_DATASETS.map((s) => (
+                          <SelectItem key={s.id} value={s.id}>
+                            {s.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <button
+                      onClick={async () => {
+                        if (!selectedSample) {
+                          toast({ variant: "destructive", title: "No Sample Selected", description: "Please select a sample dataset first." });
+                          return;
+                        }
+                        try {
+                          const [ctRes, molRes] = await Promise.all([
+                            fetch(`/samples/${selectedSample}.nii.gz`),
+                            fetch(`/samples/${selectedSample}.tsv`),
+                          ]);
+                          const ctBlob = await ctRes.blob();
+                          const molBlob = await molRes.blob();
+                          setCtFile(new File([ctBlob], `${selectedSample}.nii.gz`));
+                          setMolecularFile(new File([molBlob], `${selectedSample}.tsv`));
+                          toast({ title: "Sample Data Loaded", description: `${selectedSample} CT scan and molecular data ready for analysis.` });
+                        } catch {
+                          toast({ variant: "destructive", title: "Error", description: "Failed to load sample data." });
+                        }
+                      }}
+                      disabled={!selectedSample}
+                      className={`inline-flex items-center gap-2 px-6 py-2 rounded-full font-medium transition-all duration-300 ${
+                        selectedSample
+                          ? "border border-primary text-primary hover:bg-primary/10 cursor-pointer"
+                          : "border border-muted text-muted-foreground cursor-not-allowed"
+                      }`}
+                    >
+                      Load
+                    </button>
+                  </div>
                   <button
                     onClick={handleAnalyze}
                     disabled={!ctFile || !molecularFile}
@@ -329,19 +376,8 @@ export const Prototype = () => {
                     }`}
                   >
                     Begin Analysis
-                    <svg
-                      width="16"
-                      height="16"
-                      viewBox="0 0 16 16"
-                      fill="none"
-                    >
-                      <path
-                        d="M3 8h10m0 0L9 4m4 4L9 12"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                      <path d="M3 8h10m0 0L9 4m4 4L9 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
                     </svg>
                   </button>
                 </div>
@@ -359,15 +395,15 @@ export const Prototype = () => {
             )}
 
             {(analysisState === "uploading" || analysisState === "analyzing") && (
-              <motion.div key="loader">
-                <AnalysisLoader state={analysisState} />
-              </motion.div>
+              <AnalysisLoader key="loader" state={analysisState} />
             )}
 
             {analysisState === "complete" && result && (
-              <motion.div key="results">
-                <ResultsDisplay result={result} onReset={handleReset} />
-              </motion.div>
+              <ResultsDisplay
+                key="results"
+                result={result}
+                onReset={handleReset}
+              />
             )}
           </AnimatePresence>
         </motion.div>
