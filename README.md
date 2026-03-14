@@ -277,7 +277,7 @@ A hosted version is being deployed at **panopticai.online**.
 When live, you can use the demo without running anything locally. The frontend will connect to the deployed API. Ensure `Frontend/.env` has:
 
 ```
-VITE_API_BASE_URL=https://panoptic-render-1.onrender.com
+VITE_API_BASE_URL=https://panoptic-pdac-api.fly.dev
 ```
 
 (or whatever the production API URL is) when building for production.
