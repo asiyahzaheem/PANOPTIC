@@ -1,10 +1,10 @@
-import { motion, AnimatePresence } from "framer-motion";
-import { useInView } from "framer-motion";
-import { useRef, useState } from "react";
+/// <reference types="vite/client" />
+import React, { useRef, useState } from "react";
+import { motion, AnimatePresence, useInView } from "framer-motion";
 import { Upload, FileText, Dna, AlertCircle } from "lucide-react";
 import { AnalysisLoader } from "./AnalysisLoader";
 import { ResultsDisplay } from "./ResultsDisplay";
-import { useToast } from "@/hooks/use-toast";
+import { useToast } from "../hooks/use-toast";
 
 type AnalysisState = "idle" | "uploading" | "analyzing" | "complete" | "error";
 
@@ -359,15 +359,15 @@ export const Prototype = () => {
             )}
 
             {(analysisState === "uploading" || analysisState === "analyzing") && (
-              <AnalysisLoader key="loader" state={analysisState} />
+              <motion.div key="loader">
+                <AnalysisLoader state={analysisState} />
+              </motion.div>
             )}
 
             {analysisState === "complete" && result && (
-              <ResultsDisplay
-                key="results"
-                result={result}
-                onReset={handleReset}
-              />
+              <motion.div key="results">
+                <ResultsDisplay result={result} onReset={handleReset} />
+              </motion.div>
             )}
           </AnimatePresence>
         </motion.div>

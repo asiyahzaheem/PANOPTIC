@@ -1,5 +1,5 @@
+import React, { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { useState, useEffect } from "react";
 
 const navItems = [
   { label: "About", href: "#about" },

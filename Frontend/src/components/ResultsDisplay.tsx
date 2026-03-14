@@ -1,5 +1,5 @@
+import React, { useState } from "react";
 import { motion } from "framer-motion";
-import { useState } from "react";
 import { RotateCcw, ChevronDown, ChevronUp, Check, X } from "lucide-react";
 import type { AnalysisResult, ExplanationSection } from "./Prototype";
 
