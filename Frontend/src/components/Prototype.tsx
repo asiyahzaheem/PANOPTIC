@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 import React, { useRef, useState } from "react";
 import { motion, AnimatePresence, useInView } from "framer-motion";
 import { Upload, FileText, Dna, AlertCircle, FlaskConical } from "lucide-react";
@@ -30,6 +31,7 @@ export interface AnalysisResult {
 
 const CT_FORMATS = [".nii", ".nii.gz", ".dcm", ".dicom"];
 const MOLECULAR_FORMATS = [".csv", ".tsv", ".txt", ".vcf"];
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "https://panoptic-pdac-api.fly.dev";
 
 // Extract patient ID from filename (assumes format like "patient_123_scan.nii" or "123_data.csv")
 const extractPatientId = (filename: string): string | null => {
@@ -118,7 +120,7 @@ export const Prototype = () => {
 
       setAnalysisState("analyzing");
 
-      const res = await fetch("https://mario-nathan-come-lobby.trycloudflare.com/predict", {
+      const res = await fetch(`${API_BASE}/predict`, {
         method: "POST",
         body: formData,
       });
