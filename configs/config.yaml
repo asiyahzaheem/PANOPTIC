@@ -1,5 +1,4 @@
 data:
-  # Force project root (avoids loading from wrong copy e.g. Documents/PANOPCTIC_v1)
   project_root: "/Users/asiyah/PANOPTIC"
   base_dir: "/Volumes/ugly/PANOPTIC_DATA"
 
