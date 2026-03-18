@@ -1,5 +1,5 @@
 /// <reference types="vite/client" />
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence, useInView } from "framer-motion";
 import { Upload, FileText, Dna, AlertCircle, FlaskConical } from "lucide-react";
 import { AnalysisLoader } from "./AnalysisLoader";
@@ -21,6 +21,8 @@ const SAMPLE_DATASETS = [
 ];
 
 type AnalysisState = "idle" | "uploading" | "analyzing" | "complete" | "error";
+
+type ExplainMode = "simple" | "detailed";
 
 export interface AnalysisResult {
   subtype: string;
@@ -67,6 +69,20 @@ export const Prototype = () => {
   const [analysisState, setAnalysisState] = useState<AnalysisState>("idle");
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [selectedSample, setSelectedSample] = useState<string>("");
+  const [explainMode, setExplainMode] = useState<ExplainMode>("simple");
+  const [serverWarmingUp, setServerWarmingUp] = useState(false);
+
+  const hasWarmedUpRef = useRef(false);
+
+  const PREDICT_TIMEOUT_MS = 30_000; // 25–35s threshold
+
+  useEffect(() => {
+    // Optional warm-up call to reduce first-request latency.
+    // Do not block rendering; ignore failures.
+    if (hasWarmedUpRef.current) return;
+    hasWarmedUpRef.current = true;
+    fetch(`${API_BASE}/health`).catch(() => {});
+  }, []);
 
   const handleFileUpload = (
     e: React.ChangeEvent<HTMLInputElement>,
@@ -94,7 +110,53 @@ export const Prototype = () => {
     }
   };
 
-  const handleAnalyze = async () => {
+  const requestPredictOnce = async (mode: ExplainMode) => {
+    if (!ctFile || !molecularFile) throw new Error("Missing input files.");
+
+    const formData = new FormData();
+    formData.append("ct_file", ctFile);
+    formData.append("molecular_file", molecularFile);
+    formData.append("explain", mode);
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), PREDICT_TIMEOUT_MS);
+
+    try {
+      const res = await fetch(`${API_BASE}/predict`, {
+        method: "POST",
+        body: formData,
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        const e: any = new Error(err?.detail || `API error: ${res.status}`);
+        e.status = res.status;
+        throw e;
+      }
+
+      return await res.json();
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  };
+
+  const isTransientPredictError = (e: any): boolean => {
+    if (e?.name === "AbortError") return true; // timeout
+    if (typeof e?.status === "number" && [502, 503, 504].includes(e.status)) return true;
+    if (e instanceof TypeError) return true; // typical fetch/network failure
+    return false;
+  };
+
+  const fetchHealthOnce = async () => {
+    try {
+      await fetch(`${API_BASE}/health`);
+    } catch {
+      // Intentionally ignore
+    }
+  };
+
+  const handleAnalyze = async (mode: ExplainMode = explainMode) => {
     if (!ctFile || !molecularFile) return;
 
     // Validate patient ID match
@@ -113,41 +175,33 @@ export const Prototype = () => {
     try {
       setAnalysisState("uploading");
 
-      const formData = new FormData();
-      formData.append("ct_file", ctFile);
-      formData.append("molecular_file", molecularFile);
-      formData.append("explain", "detailed");
-
       setAnalysisState("analyzing");
 
-      const res = await fetch(`${API_BASE}/predict`, {
-        method: "POST",
-        body: formData,
-      });
+      let data: any;
+      try {
+        data = await requestPredictOnce(mode);
+      } catch (e: any) {
+        if (!isTransientPredictError(e)) throw e;
 
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err?.detail || `API error: ${res.status}`);
+        // Retry-once flow
+        setServerWarmingUp(true);
+        await fetchHealthOnce();
+        data = await requestPredictOnce(mode);
       }
-
-      const data = await res.json();
 
       const predictedSubtype = data.predicted_subtype;
       const confidence = data.confidence;
 
-      const simpleText =
-        data?.explanation?.mode === "simple"
-          ? data.explanation.summary_text
-          : data?.explanation?.summary_text || "No explanation returned.";
+      const simpleText = data?.explanation?.summary_text || "No explanation returned.";
 
       const detailedText =
-        data?.explanation?.mode === "detailed"
+        data?.explanation?.mode === "detailed" && data?.explanation?.details
           ? `${data.explanation.summary_text}\n\n${JSON.stringify(
               data.explanation.details,
               null,
               2
             )}`
-          : JSON.stringify(data.explanation, null, 2);
+          : JSON.stringify(data?.explanation ?? {}, null, 2);
 
       setResult({
         subtype: predictedSubtype,
@@ -159,14 +213,21 @@ export const Prototype = () => {
       setAnalysisState("complete");
     } catch (e: any) {
       console.error(e);
+      setServerWarmingUp(false);
       setAnalysisState("idle");
       
       // Show user-friendly error toast
-      if (e.message?.includes("fetch") || e.message?.includes("network") || e.name === "TypeError") {
+      if (e?.name === "AbortError") {
+        toast({
+          variant: "destructive",
+          title: "Request timed out",
+          description: "The analysis took too long. Please try again.",
+        });
+      } else if (e?.message?.includes("network") || e instanceof TypeError) {
         toast({
           variant: "destructive",
           title: "Connection Error",
-          description: "Unable to connect to the analysis server. Please check your internet connection and try again.",
+          description: "Unable to connect to the analysis server. Please check your connection and try again.",
         });
       } else {
         toast({
@@ -176,6 +237,9 @@ export const Prototype = () => {
         });
       }
     }
+    finally {
+      setServerWarmingUp(false);
+    }
   };
 
   const handleReset = () => {
@@ -184,6 +248,21 @@ export const Prototype = () => {
     setAnalysisState("idle");
     setResult(null);
     setSelectedSample("");
+    setExplainMode("simple");
+  };
+
+  const handleToggleExplainMode = async () => {
+    const nextMode: ExplainMode = explainMode === "simple" ? "detailed" : "simple";
+    setExplainMode(nextMode);
+    if (ctFile && molecularFile) {
+      await handleAnalyze(nextMode);
+    } else {
+      toast({
+        variant: "destructive",
+        title: "Missing inputs",
+        description: "Please run a new analysis first.",
+      });
+    }
   };
 
   return (
@@ -369,7 +448,7 @@ export const Prototype = () => {
                     </button>
                   </div>
                   <button
-                    onClick={handleAnalyze}
+                    onClick={() => handleAnalyze(explainMode)}
                     disabled={!ctFile || !molecularFile}
                     className={`inline-flex items-center gap-3 px-10 py-4 rounded-full font-medium transition-all duration-300 ${
                       ctFile && molecularFile
@@ -397,7 +476,14 @@ export const Prototype = () => {
             )}
 
             {(analysisState === "uploading" || analysisState === "analyzing") && (
-              <AnalysisLoader key="loader" state={analysisState} />
+              <div key="loader" className="space-y-6">
+                <AnalysisLoader state={analysisState} />
+                {serverWarmingUp && (
+                  <div className="text-center text-sm text-muted-foreground">
+                    Warming up server… please retry in a moment
+                  </div>
+                )}
+              </div>
             )}
 
             {analysisState === "complete" && result && (
@@ -405,6 +491,8 @@ export const Prototype = () => {
                 key="results"
                 result={result}
                 onReset={handleReset}
+                explainMode={explainMode}
+                onToggleExplainMode={handleToggleExplainMode}
               />
             )}
           </AnimatePresence>
