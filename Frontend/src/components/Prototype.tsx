@@ -24,11 +24,28 @@ type AnalysisState = "idle" | "uploading" | "analyzing" | "complete" | "error";
 
 type ExplainMode = "simple" | "detailed";
 
+export interface ExplanationSection {
+  heading: string;
+  body: string;
+  highlight?: string;
+  breakdown?: string;
+  similar_cases?: {
+    subtype: string;
+    similarity: string;
+    matches_prediction: boolean;
+  }[];
+  alternatives?: {
+    name: string;
+    percentage: number;
+  }[];
+}
+
 export interface AnalysisResult {
   subtype: string;
   probability: number;
   simpleExplanation: string;
   detailedExplanation: string;
+  explanationSections?: ExplanationSection[];
 }
 
 const CT_FORMATS = [".nii", ".nii.gz", ".dcm", ".dicom"];
@@ -228,11 +245,17 @@ export const Prototype = () => {
             )}`
           : JSON.stringify(data?.explanation ?? {}, null, 2);
 
+      const explanationSections: ExplanationSection[] | undefined =
+        data?.explanation?.mode === "detailed"
+          ? data?.explanation?.details?.sections
+          : undefined;
+
       setResult({
         subtype: predictedSubtype,
         probability: confidence,
         simpleExplanation: simpleText,
         detailedExplanation: detailedText,
+        explanationSections,
       });
 
       setAnalysisState("complete");
