@@ -69,12 +69,25 @@ export const Prototype = () => {
   const [analysisState, setAnalysisState] = useState<AnalysisState>("idle");
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [selectedSample, setSelectedSample] = useState<string>("");
-  const [explainMode, setExplainMode] = useState<ExplainMode>("simple");
+  const [explainMode, setExplainMode] = useState<ExplainMode>(() => {
+    try {
+      const stored = localStorage.getItem("explainMode");
+      if (stored === "detailed") return "detailed";
+      if (stored === "simple") return "simple";
+      localStorage.setItem("explainMode", "simple");
+    } catch {
+      // If localStorage is unavailable, fall back to default.
+    }
+    return "simple";
+  });
   const [serverWarmingUp, setServerWarmingUp] = useState(false);
+  const [isRecomputing, setIsRecomputing] = useState(false);
 
   const hasWarmedUpRef = useRef(false);
+  const activePredictRequestIdRef = useRef(0);
 
   const PREDICT_TIMEOUT_MS = 30_000; // 25–35s threshold
+  const WARMUP_WARNING_AFTER_MS = 7_000;
 
   useEffect(() => {
     // Optional warm-up call to reduce first-request latency.
@@ -172,10 +185,18 @@ export const Prototype = () => {
       return;
     }
 
-    try {
-      setAnalysisState("uploading");
+    const requestId = ++activePredictRequestIdRef.current;
+    let warningTimeoutId: number | undefined;
 
+    try {
+      setServerWarmingUp(false);
+      setAnalysisState("uploading");
       setAnalysisState("analyzing");
+
+      // If the request takes "too long", show warming-up feedback.
+      warningTimeoutId = window.setTimeout(() => {
+        if (activePredictRequestIdRef.current === requestId) setServerWarmingUp(true);
+      }, WARMUP_WARNING_AFTER_MS);
 
       let data: any;
       try {
@@ -184,10 +205,14 @@ export const Prototype = () => {
         if (!isTransientPredictError(e)) throw e;
 
         // Retry-once flow
+        if (activePredictRequestIdRef.current !== requestId) return;
         setServerWarmingUp(true);
         await fetchHealthOnce();
         data = await requestPredictOnce(mode);
       }
+
+      if (activePredictRequestIdRef.current !== requestId) return;
+      setServerWarmingUp(false);
 
       const predictedSubtype = data.predicted_subtype;
       const confidence = data.confidence;
@@ -213,6 +238,7 @@ export const Prototype = () => {
       setAnalysisState("complete");
     } catch (e: any) {
       console.error(e);
+      if (activePredictRequestIdRef.current !== requestId) return;
       setServerWarmingUp(false);
       setAnalysisState("idle");
       
@@ -238,7 +264,11 @@ export const Prototype = () => {
       }
     }
     finally {
-      setServerWarmingUp(false);
+      if (warningTimeoutId) window.clearTimeout(warningTimeoutId);
+      if (activePredictRequestIdRef.current === requestId) {
+        setServerWarmingUp(false);
+        setIsRecomputing(false);
+      }
     }
   };
 
@@ -249,12 +279,28 @@ export const Prototype = () => {
     setResult(null);
     setSelectedSample("");
     setExplainMode("simple");
+    setIsRecomputing(false);
+    try {
+      localStorage.setItem("explainMode", "simple");
+    } catch {
+      // Ignore localStorage failures
+    }
   };
 
+  const isPredicting =
+    analysisState === "uploading" || analysisState === "analyzing";
+
   const handleToggleExplainMode = async () => {
+    if (isPredicting) return;
     const nextMode: ExplainMode = explainMode === "simple" ? "detailed" : "simple";
+    try {
+      localStorage.setItem("explainMode", nextMode);
+    } catch {
+      // Ignore localStorage failures
+    }
     setExplainMode(nextMode);
     if (ctFile && molecularFile) {
+      setIsRecomputing(true);
       await handleAnalyze(nextMode);
     } else {
       toast({
@@ -448,7 +494,10 @@ export const Prototype = () => {
                     </button>
                   </div>
                   <button
-                    onClick={() => handleAnalyze(explainMode)}
+                    onClick={() => {
+                      setIsRecomputing(false);
+                      handleAnalyze(explainMode);
+                    }}
                     disabled={!ctFile || !molecularFile}
                     className={`inline-flex items-center gap-3 px-10 py-4 rounded-full font-medium transition-all duration-300 ${
                       ctFile && molecularFile
@@ -478,6 +527,11 @@ export const Prototype = () => {
             {(analysisState === "uploading" || analysisState === "analyzing") && (
               <div key="loader" className="space-y-6">
                 <AnalysisLoader state={analysisState} />
+                {isRecomputing && (
+                  <div className="text-center text-sm text-muted-foreground">
+                    loading…
+                  </div>
+                )}
                 {serverWarmingUp && (
                   <div className="text-center text-sm text-muted-foreground">
                     Warming up server… please retry in a moment
@@ -493,6 +547,7 @@ export const Prototype = () => {
                 onReset={handleReset}
                 explainMode={explainMode}
                 onToggleExplainMode={handleToggleExplainMode}
+                isPredicting={isPredicting}
               />
             )}
           </AnimatePresence>

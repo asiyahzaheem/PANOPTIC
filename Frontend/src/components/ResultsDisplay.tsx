@@ -8,6 +8,7 @@ interface ResultsDisplayProps {
   onReset: () => void;
   explainMode: "simple" | "detailed";
   onToggleExplainMode: () => void;
+  isPredicting: boolean;
 }
 
 export const ResultsDisplay = ({
@@ -15,6 +16,7 @@ export const ResultsDisplay = ({
   onReset,
   explainMode,
   onToggleExplainMode,
+  isPredicting,
 }: ResultsDisplayProps) => {
   const probabilityPercentage = Math.round(result.probability * 100);
 
@@ -85,9 +87,10 @@ export const ResultsDisplay = ({
           <h4 className="font-serif text-xl font-medium">Explanation</h4>
           <button
             onClick={onToggleExplainMode}
+            disabled={isPredicting}
             className="flex items-center gap-2 px-4 py-2 rounded-full bg-muted hover:bg-secondary transition-colors text-sm font-medium"
           >
-            {explainMode === "detailed" ? "Simple View" : "Detailed View"}
+            {isPredicting ? "Loading…" : explainMode === "detailed" ? "Simple View" : "Detailed View"}
             {explainMode === "detailed" ? (
               <ChevronUp className="w-4 h-4" />
             ) : (
